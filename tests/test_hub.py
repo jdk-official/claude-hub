@@ -371,5 +371,126 @@ class Preview(Tmp):
         self.assertIn("not cloned", text)
 
 
+class Stats(Tmp):
+    from datetime import date as _d
+    D = staticmethod(lambda s: __import__("datetime").date.fromisoformat(s))
+
+    def days(self, spec):
+        return {k: {"c": c, "ins": i, "del": d, "repos": r} for k, (c, i, d, r) in spec.items()}
+
+    def test_qualifies(self):
+        q = hub.qualifies
+        self.assertTrue(q("J", "jonathan@kyte.me.uk", ""))
+        self.assertTrue(q("J", "1234+jdk-official@users.noreply.github.com", ""))
+        self.assertFalse(q("Other", "other@example.com", ""))
+        self.assertFalse(q("dependabot[bot]", "jonathan@kyte.me.uk", ""))
+        self.assertTrue(q("Bot", "x@example.com", "Claude Sonnet 5.5 <noreply@anthropic.com>"))
+
+    def test_parse_log_shortstat(self):
+        text = ("@@h1\x1fa@b\x1fN\x1f2026-10-01\x1f\n\n 2 files changed, 10 insertions(+), 3 deletions(-)\n"
+                "@@h2\x1fa@b\x1fN\x1f2026-10-02\x1f\n\n 1 file changed, 1 deletion(-)\n")
+        c = hub.parse_log(text)
+        self.assertEqual([(x["ins"], x["del"]) for x in c], [(10, 3), (0, 1)])
+
+    def test_streak_today_active(self):
+        D = self.D
+        act = {D("2026-10-11"), D("2026-10-12"), D("2026-10-13")}
+        self.assertEqual(hub.streaks(act, D("2026-10-13")), (3, 3))
+
+    def test_streak_survives_empty_today(self):  # AC-10 / D-7
+        D = self.D
+        act = {D("2026-10-11"), D("2026-10-12")}
+        self.assertEqual(hub.streaks(act, D("2026-10-13"))[0], 2)
+
+    def test_streak_resets_after_full_empty_day(self):  # AC-11
+        D = self.D
+        self.assertEqual(hub.streaks({D("2026-10-10")}, D("2026-10-13"))[0], 0)
+
+    def test_best_streak(self):
+        D = self.D
+        act = {D("2026-09-01"), D("2026-09-02"), D("2026-09-03"), D("2026-10-12")}
+        self.assertEqual(hub.streaks(act, D("2026-10-13")), (1, 3))
+
+    def test_period_totals_and_week_boundary(self):  # Monday-based weeks
+        D = self.D
+        days = self.days({"2026-10-12": (2, 10, 1, ["a"]), "2026-10-13": (1, 5, 0, ["a", "b"]),
+                          "2026-10-11": (9, 99, 99, ["z"])})
+        today = D("2026-10-13")  # a Tuesday
+        self.assertEqual(hub.monday(today), D("2026-10-12"))
+        self.assertEqual(hub.period_totals(days, hub.monday(today), today), (3, 2, 15, 1))
+        self.assertEqual(hub.period_totals(days, today, today), (1, 2, 5, 0))
+
+    def test_avg_uses_four_complete_prior_weeks(self):
+        D = self.D
+        days = self.days({"2026-10-05": (8, 0, 0, []), "2026-09-28": (4, 0, 0, []),
+                          "2026-09-21": (0, 0, 0, []), "2026-09-14": (4, 0, 0, []),
+                          "2026-10-13": (50, 0, 0, [])})
+        self.assertEqual(hub.avg_weekly_commits(days, D("2026-10-13")), 4.0)
+
+    def test_sparkline_flat_and_single_bar(self):  # AC-13, AC-14
+        D = self.D
+        today = D("2026-10-13")
+        self.assertEqual(hub.sparkline({}, today), "▁" * 8)
+        one = hub.sparkline({"2026-09-28": 3}, today)
+        self.assertEqual(sorted(set(one)), ["▁", "█"])
+        self.assertEqual(one.count("█"), 1)
+        self.assertEqual(len(one), 8)
+
+    def test_heatmap_shape_and_width(self):  # AC-16
+        D = self.D
+        today = D("2026-10-13")
+        days = self.days({"2026-10-12": (3, 0, 0, []), "2026-10-13": (1, 0, 0, [])})
+        lines = hub.heatmap(days, today)
+        self.assertEqual(len(lines), 8)
+        self.assertLessEqual(max(len(l) for l in lines), 80)
+        self.assertTrue(lines[0].startswith("Mon"))
+        self.assertIn("█", lines[0])   # Monday 2026-10-12 holds the max
+        self.assertIn("▒", lines[1])   # Tuesday today: 1 of max 3
+
+    def test_repo_commits_end_to_end(self):
+        r = os.path.join(self.tmp, "repo")
+        os.makedirs(r)
+        sh(["git", "init", "-q", "-b", "main"], r)
+        today = time.strftime("%Y-%m-%dT12:00:00")
+
+        def commit(name, email, msg, fname):
+            with open(os.path.join(r, fname), "w") as f:
+                f.write("a\nb\n")
+            sh(["git", "add", "-A"], r)
+            sh(["git", "-c", f"user.name={name}", "-c", f"user.email={email}", "commit", "-q", "-m", msg],
+               r, env={"GIT_AUTHOR_DATE": today, "GIT_COMMITTER_DATE": today})
+        commit("Me", "jonathan@kyte.me.uk", "mine", "a")
+        commit("Stranger", "s@example.com", "theirs", "b")
+        commit("dependabot[bot]", "bot@example.com", "bump", "c")
+        commit("Helper", "h@example.com",
+               "paired\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>", "d")
+        commits = hub.repo_commits(r)
+        self.assertEqual(len(commits), 2)  # mine + the Claude co-authored one
+        self.assertTrue(all(c["ins"] == 2 for c in commits))
+        st = hub.aggregate({r: ("repo", commits)}, None)
+        day = time.strftime("%Y-%m-%d")
+        self.assertEqual(st["days"][day]["c"], 2)
+        self.assertEqual(st["days"][day]["ins"], 4)
+        self.assertEqual(sum(st["repo_weeks"][r].values()), 2)
+
+    def test_compute_stats_dedups_same_remote(self):
+        a, b = os.path.join(self.tmp, "a"), os.path.join(self.tmp, "b")
+        for r in (a, b):
+            make_repo(r, remote="git@github.com:o/same.git", date=time.strftime("%Y-%m-%dT12:00:00"))
+        st = hub.compute_stats(hub.scan_local([self.tmp]))
+        self.assertEqual(sum(v["c"] for v in st["days"].values()), 1)
+
+    def test_header_when_no_stats(self):
+        self.assertIn("computing", hub.stats_header({})[0])
+
+    def test_header_with_stats(self):
+        D = self.D
+        days = self.days({"2026-10-13": (2, 1500, 20, ["a"]), "2026-10-12": (1, 1, 1, ["b"])})
+        lines = hub.stats_header({"stats": {"days": days}}, today=D("2026-10-13"))
+        self.assertIn("streak 2d", lines[0])
+        self.assertIn("today 2c 1r +1.5k/-20", lines[0])
+        self.assertIn("week 3c 2r", lines[1])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,7 +24,7 @@ import textwrap
 import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 HOME = os.path.expanduser("~")
 CLONE_ROOT = "/mnt/data/github"
@@ -37,6 +37,12 @@ GH_TIMEOUT = 20
 PR_TTL = 15 * 60
 EXCERPT_LINES = 10
 MAX_ROWS = 100
+STATS_DAYS = 400
+STATS_TTL = 300
+IDENTITY_EMAILS = {"jonathan@kyte.me.uk"}
+NOREPLY_MARK = "jdk-official"
+BLOCKS = "▁▂▃▄▅▆▇█"
+HEAT = "░▒▓█"
 
 DEFAULT_CONFIG = {
     "owners": ["jdk-official"],
@@ -251,7 +257,8 @@ def do_refresh(cfg):
 
 
 def refresh_extra(cfg):
-    """Hook for derived data refreshed in the background (statistics)."""
+    """Recompute commit statistics from local clones (no network)."""
+    save_cache_section(stats=compute_stats(scan_local(cfg["scan_roots"])))
 
 
 # --- P4: local scan, merge, de-dup ------------------------------------------
@@ -504,8 +511,197 @@ def preview_text(path, slug, name, width=60):
 
 
 def preview_extra(path, name, width):
-    """Hook for extra per-repo preview lines (sparkline)."""
-    return []
+    weeks = ((load_cache().get("stats") or {}).get("repo_weeks") or {}).get(path)
+    if weeks is None:
+        return []
+    return ["8 weeks  " + sparkline(weeks, date.today())]
+
+
+# --- P9-P11: statistics (local git history only, no network) ----------------
+
+def is_bot(name, email):
+    return "[bot]" in f"{name} {email}".lower()
+
+
+def qualifies(name, email, trailers):
+    """Authored by the user (email or GitHub noreply), or carrying a Claude co-author trailer."""
+    if is_bot(name, email):
+        return False
+    e = email.lower()
+    if e in IDENTITY_EMAILS or (e.endswith("@users.noreply.github.com") and NOREPLY_MARK in e):
+        return True
+    return "claude" in trailers.lower()
+
+
+STAT_RE = re.compile(r"(\d+) insertion|(\d+) deletion")
+
+
+def parse_log(text):
+    """Parse `git log --shortstat` output with our @@ record format into commit dicts."""
+    commits, cur = [], None
+    for line in text.splitlines():
+        if line.startswith("@@"):
+            parts = line[2:].split("\x1f")
+            if len(parts) >= 5:
+                cur = {"hash": parts[0], "email": parts[1], "name": parts[2], "date": parts[3],
+                       "trailers": parts[4], "ins": 0, "del": 0}
+                commits.append(cur)
+        elif cur is not None and "changed" in line:
+            for m in STAT_RE.finditer(line):
+                if m.group(1):
+                    cur["ins"] += int(m.group(1))
+                if m.group(2):
+                    cur["del"] += int(m.group(2))
+    return commits
+
+
+def repo_commits(path, days=STATS_DAYS):
+    rc, out, _ = run(
+        ["git", "--no-optional-locks", "log", "--all", "--no-merges", f"--since={days}.days.ago",
+         "--shortstat", "--date=format-local:%Y-%m-%d",
+         "--format=@@%H%x1f%ae%x1f%an%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x2c)"],
+        cwd=path, timeout=30)
+    if rc != 0:
+        return []
+    seen, res = set(), []
+    for c in parse_log(out):
+        if c["hash"] in seen or not qualifies(c["name"], c["email"], c["trailers"]):
+            continue
+        seen.add(c["hash"])
+        res.append(c)
+    return res
+
+
+def monday(d):
+    return d - timedelta(days=d.weekday())
+
+
+def aggregate(per_repo, today):
+    """per_repo: {path: (name, commits)} -> cached stats structure."""
+    days, repo_weeks = {}, {}
+    for path, (name, commits) in per_repo.items():
+        rw = {}
+        for c in commits:
+            try:
+                d = date.fromisoformat(c["date"])
+            except ValueError:
+                continue
+            e = days.setdefault(c["date"], {"c": 0, "ins": 0, "del": 0, "repos": []})
+            e["c"] += 1
+            e["ins"] += c["ins"]
+            e["del"] += c["del"]
+            if name not in e["repos"]:
+                e["repos"].append(name)
+            wk = monday(d).isoformat()
+            rw[wk] = rw.get(wk, 0) + 1
+        repo_weeks[path] = rw
+    return {"computed_at": time.time(), "days": days, "repo_weeks": repo_weeks}
+
+
+def compute_stats(local, today=None):
+    seen, per_repo = set(), {}
+    git_dirs = [l for l in local if l["is_git"]]
+    for l in sorted(git_dirs, key=lambda x: x["path"]):
+        key = l["slug"].lower() if l["slug"] else "path:" + l["path"]
+        if key in seen:
+            continue
+        seen.add(key)
+        per_repo[l["path"]] = (l["name"], None)
+    with ThreadPoolExecutor(8) as ex:
+        paths = list(per_repo)
+        for p, commits in zip(paths, ex.map(repo_commits, paths)):
+            per_repo[p] = (per_repo[p][0], commits)
+    return aggregate(per_repo, today or date.today())
+
+
+def active_dates(days):
+    return {date.fromisoformat(d) for d, v in days.items() if v.get("c", 0) > 0}
+
+
+def streaks(active, today):
+    """(current, best). The current streak stays alive until a full day passes with no commit."""
+    day = today if today in active else today - timedelta(days=1)
+    cur = 0
+    while day in active:
+        cur += 1
+        day -= timedelta(days=1)
+    best = run_len = 0
+    prev = None
+    for d in sorted(active):
+        run_len = run_len + 1 if prev and (d - prev).days == 1 else 1
+        best = max(best, run_len)
+        prev = d
+    return cur, best
+
+
+def period_totals(days, start, end):
+    """(commits, distinct repos, insertions, deletions) for start..end inclusive."""
+    c = ins = dele = 0
+    repos = set()
+    d = start
+    while d <= end:
+        v = days.get(d.isoformat())
+        if v:
+            c += v["c"]
+            ins += v["ins"]
+            dele += v["del"]
+            repos.update(v.get("repos", []))
+        d += timedelta(days=1)
+    return c, len(repos), ins, dele
+
+
+def avg_weekly_commits(days, today):
+    """Mean commits per week over the 4 complete weeks before the current one."""
+    this_mon = monday(today)
+    total = sum(period_totals(days, this_mon - timedelta(weeks=i),
+                              this_mon - timedelta(weeks=i) + timedelta(days=6))[0]
+                for i in range(1, 5))
+    return total / 4
+
+
+def kfmt(n):
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def spark_chars(values):
+    mx = max(values) if values else 0
+    out = ""
+    for v in values:
+        if v <= 0 or mx <= 0:
+            out += BLOCKS[0]
+        else:
+            out += BLOCKS[min(7, max(1, -(-v * 7 // mx)))]
+    return out
+
+
+def sparkline(weeks, today, n=8):
+    """Commits per Monday-based week for the last n weeks (oldest first)."""
+    this_mon = monday(today)
+    return spark_chars([weeks.get((this_mon - timedelta(weeks=i)).isoformat(), 0)
+                        for i in range(n - 1, -1, -1)])
+
+
+def heatmap(days, today, weeks=12):
+    """Rows Mon..Sun, columns oldest week first; at most 80 columns wide."""
+    start = monday(today) - timedelta(weeks=weeks - 1)
+    counts = [days.get((start + timedelta(days=i)).isoformat(), {}).get("c", 0)
+              for i in range(weeks * 7)]
+    mx = max(counts)
+
+    def level(c):
+        if c <= 0 or mx <= 0:
+            return "·"
+        return HEAT[min(3, -(-c * 4 // mx) - 1)]
+    names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    lines = []
+    for r in range(7):
+        cells = []
+        for w in range(weeks):
+            d = start + timedelta(days=w * 7 + r)
+            cells.append(" " if d > today else level(counts[w * 7 + r]))
+        lines.append(f"{names[r]}  " + " ".join(cells))
+    lines.append(f"      less {HEAT} more   (· none)   weeks start {start.isoformat()}")
+    return lines
 
 
 # --- P8: launch -------------------------------------------------------------
@@ -538,9 +734,18 @@ def clone_repo(slug, name):
 
 # --- main -------------------------------------------------------------------
 
-def stats_header(cache):
-    """Hook for the statistics header lines."""
-    return []
+def stats_header(cache, today=None):
+    s = cache.get("stats")
+    if not s:
+        return ["stats: computing (first refresh), see next launch"]
+    today = today or date.today()
+    days = s.get("days", {})
+    cur, best = streaks(active_dates(days), today)
+    t = period_totals(days, today, today)
+    w = period_totals(days, monday(today), today)
+    avg = avg_weekly_commits(days, today)
+    return [f"streak {cur}d (best {best}d) · today {t[0]}c {t[1]}r +{kfmt(t[2])}/-{kfmt(t[3])}",
+            f"week {w[0]}c {w[1]}r +{kfmt(w[2])}/-{kfmt(w[3])} (avg {avg:.0f}c/wk)"]
 
 
 def header_lines(cache, warn, gh_present):
@@ -597,8 +802,7 @@ def main(argv):
         for ln in lines[: n + 1]:
             print(ln.split("\t")[1])
         return 0
-    if gh_present:
-        spawn_refresh()
+    spawn_refresh()
     header = "\n".join(header_lines(cache, warn, gh_present))
     me = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.realpath(__file__))}"
     res = subprocess.run(
@@ -624,8 +828,21 @@ def main(argv):
 
 
 def run_stats(args, cfg):
-    sys.stderr.write("hub: stats is not available yet\n")
-    return 1
+    require_tools(["git"])
+    cache = load_cache()
+    s = cache.get("stats")
+    if not s or time.time() - s.get("computed_at", 0) > STATS_TTL:
+        s = compute_stats(scan_local(cfg["scan_roots"]))
+        save_cache_section(stats=s)
+    days = s.get("days", {})
+    if "--days" in args:
+        for d in sorted(days):
+            print(f"{d} {days[d]['c']}")
+        return 0
+    print("\n".join(stats_header({"stats": s})))
+    print()
+    print("\n".join(heatmap(days, date.today())))
+    return 0
 
 
 if __name__ == "__main__":
