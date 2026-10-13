@@ -62,8 +62,9 @@ Cache, refresh, degradation
 
 Listing, search, organisation
 - **FR-9** Where scan roots are configured (default `/mnt/data/github`, `/mnt/data/files`, `/mnt/data/scratch`), the launcher shall list each immediate subdirectory of each root, aged by last commit time for git repos and by directory mtime otherwise.
-- **FR-10** When the user types a query, the launcher shall fuzzy-match it against all cached repos (up to 100), not only those displayed.
-- **FR-11** While the query is empty, the launcher shall display at most 10 rows (configurable `count`).
+- **FR-10** When the user types a query, the launcher shall fuzzy-match it against all cached repos (up to 100), not only those visible.
+- **FR-34** The launcher shall match the query against repo name and tags only, not against age, branch, markers or sparkline text.
+- **FR-11** While the query is empty, the launcher shall list all cached repos in the FR-16 order, so that the first 10 rows (configurable `count`, the initial visible window) are the highest-ranked and the rest are reachable by scrolling.
 - **FR-12** The launcher shall label each row with its origin (GitHub owner or scan-root directory) and de-duplicate repos by remote URL rather than by name.
 - **FR-13** Where a repo is listed as hidden in `~/.config/hub/config`, the launcher shall omit it from the list.
 - **FR-14** Where a repo is listed as pinned in `~/.config/hub/config`, the launcher shall sort it ahead of all unpinned repos.
@@ -77,6 +78,8 @@ Preview
 - **FR-20** When the preview renders, the launcher shall word-wrap description and paths to the pane width without clipping.
 - **FR-21** While the terminal is 60 columns wide or narrower, the launcher shall show each row on one line with the repo name intact and place the preview below the list.
 - **FR-22** While the terminal is 100 columns wide or wider, the launcher shall place the preview beside the list.
+- **FR-35** The launcher shall show the streak and today/week statistics in a header above the prompt, and a one-line key hint footer (Enter new, `ctrl-l` resume, `ctrl-r` refresh, `ctrl-t` tag, `esc` quit).
+- **FR-36** The launcher shall mark each row with: pinned, dirty-file count, commits ahead of upstream, open PR count, GitHub-only (not cloned), as shown in section 4a.
 
 Launch
 - **FR-23** When the user presses Enter on a locally present repo, the launcher shall change to the repo directory and exec `claude` as a new session.
@@ -92,6 +95,37 @@ Gamification
 - **FR-31** When the user runs `hub stats`, the launcher shall print a 12-week contribution heatmap to the terminal.
 - **FR-32** The launcher shall compute all statistics from local git history and make no network call for them.
 - **FR-33** The launcher shall count each calendar day with at least one qualifying commit once toward streaks and averages, regardless of the number of commits that day.
+
+## 4a. Interface layout (mock-up reviewed and accepted by the user, 2026-10-13)
+
+Illustrative data, not measurements. Narrow window (about 50 columns, preview below the list):
+
+```
+ hub  streak 12d (best 31)  today 3c · 2 repos · +184/-61
+ week 19c · 5 repos · +1.2k/-0.4k   (avg 14c)   cache 2m
+ ───────────────────────────────────────────────────
+ > ho                                    12/48
+ ───────────────────────────────────────────────────
+ ★ hub              ●3 ↑2   main    today   ▂▅█▃▁▁▂▆
+ ★ daily-hub        ●1      main    today   ▁▁▃▅▂▁▁▁
+   agent-catalog    ↑1 PR2  main    2d      ▃▁▁▂▁▁▄▁
+   PSDRoster  ☁     PR1     —       today   ▁▁▁▁▂▅▃█
+   SADashboard              main    7d      ▁▁▁▁▁▂▁▁
+ ───────────────────────────────────────────────────
+ hub  jdk-official · private · local+gh · #tools
+ last: a2086f7 Fix vault-relative paths in PRD  1h
+       fb0f076 Record remaining PRD decisions   5m
+ PRs 0 · issues 0
+ HANDOVER: Terminal launcher: pick a recent repo...
+ ───────────────────────────────────────────────────
+ ⏎ new  ^l resume  ^r refresh  ^t tag  esc quit
+```
+
+Wide window (100 columns or more): same content with the preview pane to the right of the list.
+
+Markers: `★` pinned, `●N` dirty files, `↑N` commits ahead, `PRN` open PRs, `☁` GitHub-only (not cloned), `—` no branch. Sparkline is the last 8 weeks of commits. `hub stats` prints a separate 12-week heatmap of at most 80 columns (FR-31, NFR-6).
+
+Implementation notes (design, not requirements): fzf provides the preview position switching, header and footer, match count, `reload` with `--track`, and `become` for launch. Name and tags are the searchable fields; the other columns are display-only.
 
 ## 5. Non-functional requirements
 
@@ -142,6 +176,9 @@ All numbers are targets to be measured, not measurements.
 - **AC-22** The hub source shall contain no invocation of `git push`, `reset`, `clean`, or a forced operation.
 - **AC-23** Given a scratch directory without `.git` under `/mnt/data/scratch`, when hub lists projects, then the directory is listed, aged by mtime, and launchable.
 - **AC-24** Given one repo with a HANDOVER.md and one with only a README, when each is highlighted, then the preview shows the HANDOVER.md lines for the first and the README lines for the second.
+- **AC-25** When the query is `main`, no repo shall match solely because its branch is `main`.
+- **AC-26** While the picker is open, the key hint footer shall list the Enter, `ctrl-l`, `ctrl-r`, `ctrl-t` and `esc` actions.
+- **AC-27** Given a repo that is dirty, ahead of upstream, has an open PR, or is GitHub-only, when the list renders, then the row shows the matching marker from section 4a.
 
 ## 8. Assumptions & open questions
 
@@ -157,7 +194,7 @@ All numbers are targets to be measured, not measurements.
 | 8 | Whether today without a commit breaks the current streak. | Streak stays alive until the day ends; it resets only after a full day without a qualifying commit (AC-11). | Header shows 0 each morning if the opposite is wanted. |
 | 9 | Owners and collaborator/org repos (open question 3). | Only `jdk-official`; config key `owners` reserved for more. | Org or collaborator repos are missing from the list. |
 | 10 | Enter vs resume (open question 2); `ctrl-l` key confirmed by the user (fzf binds it to clear-screen by default; hub overrides it); `claude --continue` behaviour per directory is unverified. | Enter starts new, `ctrl-l` resumes; revisit if resume exceeds 70% of launches. | Wrong default costs a keystroke per launch; key may clash with fzf bindings. |
-| 11 | Feasibility, unverified: whether fzf (installed version unknown) supports showing 10 rows until typed while searching all 100, in-place list updates from a background refresh (reload/listen), and `change-preview-window` toggling, from a stdlib Python wrapper. | Assume feasible with `--bind` reload/change actions and `--listen`; fallback is a full list shown scrollable and a restart-free reload only on `ctrl-r`. Cost of the mechanism is unstated. | FR-2, FR-10, FR-11, FR-21/22 may need rework or a weaker behaviour; startup NFRs may be missed. |
+| 11 | Feasibility, unverified: whether fzf (installed version unknown) supports showing 10 rows until typed while searching all 100, in-place list updates from a background refresh (reload/listen), and `change-preview-window` toggling, from a stdlib Python wrapper. | Assume feasible with `--bind` reload/change actions (with `--track`) and `become` for launch; the list is shown in full and scrolls (FR-11), so no "10 rows until typed" mechanism is needed. Fallback is a reload only on `ctrl-r`. Cost of the mechanism is unstated. | FR-2, FR-10, FR-11, FR-21/22 may need rework or a weaker behaviour; startup NFRs may be missed. |
 | 12 | Config format and the minimum Python version. TOML via stdlib `tomllib` requires 3.11, conflicting with the brainstorm's 3.8 floor. | `~/.config/hub/config` is TOML; minimum Python 3.11 (C-8); keys: owners, scan_roots, pinned, hidden, tags, count. | If 3.8 support is required, switch to `configparser` and restate FR-8/C-8. |
 | 13 | Needs-attention definition and data. PR counts exist only after a lazy fetch (FR-19). | Tiers: pinned, then needs-attention (dirty, ahead of upstream, or cached open PR), then recency; a repo with no cached PR data is not boosted by PRs. | Attention ordering under-reports PR-only repos until first highlighted. |
 | 14 | Tag syntax and filter key (T1). | Tags are a per-repo list in config; filter key `ctrl-t` opens a tag chooser; untagged repos have no tag. | Key or shape must change; group semantics (nested groups) unsupported. |
@@ -171,9 +208,11 @@ All numbers are targets to be measured, not measurements.
 | 22 | Refresh cadence and stale threshold (open question 6, S8). | Refresh on every launch plus `ctrl-r`; no timer; stale after 24 h. | Cache can be stale between launches; revisit pre-warm (C6). |
 | 23 | Timeout and speed numbers are brainstorm targets, not measurements; 3 s per-repo timeout is a proposal. | Adopt as NFR targets; measure before sign-off. | Targets may be unattainable on cold cache with many repos. |
 | 24 | Per-repo `claude_args` and extra flags (open question 12). | No flags; not implemented. | User must pass flags manually inside claude. |
-| 25 | Sparkline and heatmap glyph rendering in the user's Ghostty font. | Use Unicode block characters (▁-█); no ASCII fallback. | Misrendered cells; add ASCII fallback. |
+| 25 | Sparkline and heatmap glyph rendering in the user's Ghostty font. | Use Unicode block characters (▁-█) and Nerd Font glyphs (as in the user's status bar), not emoji, to avoid fzf mis-measuring widths; no ASCII fallback. | Misrendered cells; add ASCII fallback. |
 
 ## 9. Requirements report
+
+Revised 2026-10-13 after the mock-up review: FR-34 to FR-36 and AC-25 to AC-27 were added and FR-11 reworded. The counts in the report below are from the original authoring pass and are now 36 FRs and 27 ACs.
 
 ```json
 {
