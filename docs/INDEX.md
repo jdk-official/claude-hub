@@ -1,4 +1,4 @@
-# hub — workspace index
+# claude-hub — workspace index
 
 The map of this workspace. One line per area; follow a link to go there. Loaded
 to orient at the start of a session, then hand off to the router.

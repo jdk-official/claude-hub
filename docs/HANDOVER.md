@@ -2,7 +2,7 @@
 updated: 2026-10-13
 ---
 
-# hub — handover
+# claude-hub — handover
 
 ## TL;DR
 
@@ -10,24 +10,24 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
 
 ## Where things live
 
-- Repo: `/mnt/data/github/hub`
-- Vault: `/mnt/data/github/hub/docs`
+- Repo: `/mnt/data/github/claude-hub`
+- Vault: `/mnt/data/github/claude-hub/docs`
 - Index: [INDEX.md](INDEX.md) — the workspace map.
 - Router: [ROUTER.md](ROUTER.md) — task → which notes to load.
 
 ## Current state
 
-- Done (2026-10-13): iteration 1 built autonomously and merged to main: tool checks, cache (`~/.cache/hub`),
+- Done (2026-10-13): iteration 1 built autonomously and merged to main: tool checks, cache (`~/.cache/claude-hub`),
   TOML config, scan roots, needs-attention ordering and markers, preview (commits, HANDOVER/README excerpt,
   PRs/issues), launch (new / resume with ctrl-l, clone confirm), stats header, per-repo sparkline,
-  `hub stats` heatmap, responsive preview, dashboard (heatmap) on the home row. Tests: `python3 -m unittest discover -s tests`
+  `claude-hub stats` heatmap, responsive preview, dashboard (heatmap) on the home row. Tests: `python3 -m unittest discover -s tests`
   runs unit tests plus end-to-end tests that drive the real picker in tmux (needs tmux and fzf).
-- Done (iteration 3): hub opens in every new Ghostty shell via a `~/.bashrc` block (verified into the running instance);
-  `initial-command` was dropped because it never fires in a long-running single instance. Opt out with HUB_AUTOSTART=0.
-- Fixed after use: viewing a project no longer moves it up (PR counts come from the refresh); hub now launches claude
+- Done (iteration 3): claude-hub opens in every new Ghostty shell via a `~/.bashrc` block (verified into the running instance);
+  `initial-command` was dropped because it never fires in a long-running single instance. Opt out with CLAUDE_HUB_AUTOSTART=0.
+- Fixed after use: viewing a project no longer moves it up (PR counts come from the refresh); claude-hub now launches claude
   with the dashboard mod like the shell function does.
 - Reviewed: independent code review (1 HIGH, 6 MEDIUM, 7 LOW) all addressed in `review-fixes`: failed refresh no longer
-  wipes cached repos, clone cleanup can never delete a directory hub did not create, locked cache writes,
+  wipes cached repos, clone cleanup can never delete a directory claude-hub did not create, locked cache writes,
   git runs with fsmonitor/hooks disabled, stats union clones and flag timeouts. 63 tests.
 - Reviewed twice (iteration 2 review: 1 HIGH, 4 MEDIUM, 6 LOW, all addressed or documented).
 - Done (iteration 2): header above the prompt, key-hint footer, name-and-tags-only search, in-place background

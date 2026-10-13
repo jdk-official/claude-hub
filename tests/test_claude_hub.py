@@ -1,4 +1,4 @@
-"""Tests for bin/hub. Run: python3 -m unittest discover -s tests -v"""
+"""Tests for bin/claude-hub. Run: python3 -m unittest discover -s tests -v"""
 import importlib.machinery
 import importlib.util
 import json
@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HUB = os.path.join(ROOT, "bin", "hub")
+HUB = os.path.join(ROOT, "bin", "claude-hub")
 
 
 def load_hub():
@@ -305,12 +305,12 @@ class CloneAbort(Tmp):
 
 
 class Cli(Tmp):
-    """Run bin/hub as a subprocess with a sandboxed HOME, config and PATH."""
+    """Run bin/claude-hub as a subprocess with a sandboxed HOME, config and PATH."""
 
     def env(self, path=None):
         e = dict(os.environ)
-        e.update(HOME=self.tmp, HUB_CACHE_DIR=self.cache,
-                 HUB_CONFIG=os.path.join(self.tmp, "config"),
+        e.update(HOME=self.tmp, CLAUDE_HUB_CACHE_DIR=self.cache,
+                 CLAUDE_HUB_CONFIG=os.path.join(self.tmp, "config"),
                  PATH=path if path is not None else os.environ["PATH"])
         return e
 
@@ -730,7 +730,7 @@ class Iteration2Units(Tmp):
     def setUp(self):
         super().setUp()
         self.state = os.path.join(self.tmp, "tag.state")
-        p = mock.patch.dict(os.environ, {"HUB_TAG_STATE": self.state})
+        p = mock.patch.dict(os.environ, {"CLAUDE_HUB_TAG_STATE": self.state})
         p.start()
         self.addCleanup(p.stop)
         self.cfg = dict(hub.DEFAULT_CONFIG, tags={"a": ["x"], "b": ["y", "x"]})

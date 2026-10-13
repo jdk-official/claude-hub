@@ -10,20 +10,20 @@ import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HUB = os.path.join(ROOT, "bin", "hub")
+HUB = os.path.join(ROOT, "bin", "claude-hub")
 HAVE = bool(shutil.which("tmux") and shutil.which("fzf") and shutil.which("git"))
 
 FAKE_CLAUDE = """#!/bin/sh
-printf 'cwd=%s\\nargs=%s\\n' "$PWD" "$*" > "$HUB_E2E_OUT"
+printf 'cwd=%s\\nargs=%s\\n' "$PWD" "$*" > "$CLAUDE_HUB_E2E_OUT"
 """
 FAKE_GH = """#!/bin/sh
 case "$1 $2" in
   "repo list")
-    [ -n "$HUB_E2E_SLEEP" ] && sleep "$HUB_E2E_SLEEP"
-    if [ -f "$HUB_E2E_REPOS" ]; then cat "$HUB_E2E_REPOS"; exit 0; fi
+    [ -n "$CLAUDE_HUB_E2E_SLEEP" ] && sleep "$CLAUDE_HUB_E2E_SLEEP"
+    if [ -f "$CLAUDE_HUB_E2E_REPOS" ]; then cat "$CLAUDE_HUB_E2E_REPOS"; exit 0; fi
     echo "no network" >&2; exit 1 ;;
   "repo clone") mkdir -p "$4"; echo partial > "$4/partial.txt"; exit 1 ;;
-  "api rate_limit") [ -n "$HUB_E2E_OFFLINE" ] && exit 1; exit 0 ;;
+  "api rate_limit") [ -n "$CLAUDE_HUB_E2E_OFFLINE" ] && exit 1; exit 0 ;;
   "pr list") echo '[{"title":"an open PR"}]'; exit 0 ;;
   "issue list") echo '[]'; exit 0 ;;
   *) exit 1 ;;
@@ -85,12 +85,12 @@ class E2E(unittest.TestCase):
         return subprocess.run(["tmux", "-L", self.sock] + list(args), capture_output=True, text=True)
 
     def start(self, cols=150, rows=40, argv=(), extra_env=None):
-        env = {"HOME": self.home, "PATH": f"{self.bin}:/usr/bin:/bin", "HUB_CACHE_DIR": self.cache,
-               "HUB_CONFIG": os.path.join(self.tmp, "config"), "HUB_CLONE_ROOT": self.clones,
-               "HUB_E2E_OUT": self.out, "XDG_RUNTIME_DIR": self.run_dir, "HUB_E2E_REPOS": os.path.join(self.tmp, "gh-repos.json"), "TERM": "xterm-256color", "LANG": "C.UTF-8"}
+        env = {"HOME": self.home, "PATH": f"{self.bin}:/usr/bin:/bin", "CLAUDE_HUB_CACHE_DIR": self.cache,
+               "CLAUDE_HUB_CONFIG": os.path.join(self.tmp, "config"), "CLAUDE_HUB_CLONE_ROOT": self.clones,
+               "CLAUDE_HUB_E2E_OUT": self.out, "XDG_RUNTIME_DIR": self.run_dir, "CLAUDE_HUB_E2E_REPOS": os.path.join(self.tmp, "gh-repos.json"), "TERM": "xterm-256color", "LANG": "C.UTF-8"}
         env.update(extra_env or {})
         inner = " ".join(["env"] + [f"{k}={v}" for k, v in env.items()] + [sys.executable, HUB] + list(argv))
-        # keep the pane alive after hub exits so its final message can be read
+        # keep the pane alive after claude-hub exits so its final message can be read
         r = self.tmux("new-session", "-d", "-s", "t", "-x", str(cols), "-y", str(rows),
                       f"{inner}; echo HUB_EXIT=$?; sleep 30")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -236,7 +236,7 @@ class E2E(unittest.TestCase):
         c["gh"]["ok"] = False
         with open(os.path.join(self.cache, "repos.json"), "w") as f:
             json.dump(c, f)
-        self.start(extra_env={"HUB_E2E_OFFLINE": "1"})
+        self.start(extra_env={"CLAUDE_HUB_E2E_OFFLINE": "1"})
         self.ready()
         self.type("remote-only")
         self.wait_for(lambda: "not cloned" in self.screen(), "remote preview")
@@ -309,7 +309,7 @@ class E2E(unittest.TestCase):
 
     def test_background_refresh_updates_list_in_place_and_keeps_query(self):  # FR-2, AC-2
         self.gh_repos_file("alphanew", "remote-only")
-        self.start(extra_env={"HUB_E2E_SLEEP": "2"})
+        self.start(extra_env={"CLAUDE_HUB_E2E_SLEEP": "2"})
         self.ready()
         self.type("al")
         self.wait_for(lambda: "alphanew" not in self.screen(), "pre-refresh state")
@@ -325,7 +325,7 @@ class E2E(unittest.TestCase):
         self.wait_for(lambda: "alphanew" in self.screen(), "repo to appear after ctrl-r", 12)
 
     def session_dirs(self):
-        return [d for d in os.listdir(self.run_dir) if d.startswith("hub-")]
+        return [d for d in os.listdir(self.run_dir) if d.startswith("claude-hub-")]
 
     def test_viewing_projects_does_not_reorder_the_list(self):
         self.gh_repos_file("remote-only", "another")
@@ -354,7 +354,7 @@ class E2E(unittest.TestCase):
 
     def test_ctrl_r_does_not_block_input_while_refresh_runs(self):  # NFR-3
         self.gh_repos_file("remote-only")
-        self.start(extra_env={"HUB_E2E_SLEEP": "3"})
+        self.start(extra_env={"CLAUDE_HUB_E2E_SLEEP": "3"})
         self.ready()
         lock = os.path.join(self.cache, "refresh.lock")
         self.wait_for(lambda: not os.path.exists(lock), "startup refresh to finish", 10)
@@ -370,7 +370,7 @@ class E2E(unittest.TestCase):
         blocker = os.path.join(self.tmp, "blocker")
         open(blocker, "w").close()
         bad = os.path.join(blocker, "sub")
-        env = {"HUB_CACHE_DIR": bad}
+        env = {"CLAUDE_HUB_CACHE_DIR": bad}
         self.start(extra_env=env)
         self.wait_for(lambda: "repo>" in self.screen(), "picker with unusable cache dir")
         self.assertNotIn("Traceback", self.screen())

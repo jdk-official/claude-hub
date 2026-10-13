@@ -1,7 +1,7 @@
 {
   "date": "2026-10-13",
-  "project-name": "hub",
-  "repo-path": "/mnt/data/github/hub",
+  "project-name": "claude-hub",
+  "repo-path": "/mnt/data/github/claude-hub",
   "rules-pointer": "/mnt/data/github/agent-catalog/plugins/governance/rules/",
-  "vault-path": "/mnt/data/github/hub/docs"
+  "vault-path": "/mnt/data/github/claude-hub/docs"
 }
