@@ -24,3 +24,6 @@ decisions also get their own record under `adr/` (see [adr/README.md](../adr/REA
 - 2026-10-13: claude-hub passes the same `--plugin-dir` for the project-dashboard mod that the user's `claude()` shell function adds.
 - 2026-10-13: Project renamed claude-hub (repo, directory, titles). The command stays `claude-hub`, so the shell block, cache dir
   (~/.cache/claude-hub) and muscle memory are unchanged. GitHub keeps a redirect from the old repo name.
+- 2026-10-13: Sessions are read from Claude Code's own registry and transcripts (no daemon of ours). Spares are hidden; a
+  background session is "attached" when an interactive entry's parkedJobId equals its jobId.
+- 2026-10-13: Stopping anything is explicit (ctrl-x) and confirmed; orphan SIGTERM requires registry pid and procStart to match.

@@ -1,4 +1,5 @@
 """Tests for bin/claude-hub. Run: python3 -m unittest discover -s tests -v"""
+import glob
 import importlib.machinery
 import importlib.util
 import json
@@ -849,7 +850,7 @@ class Iteration2Units(Tmp):
         self.assertEqual(len(bodies), 1, bodies)
         body = bodies[0]
         self.assertLess(body.index("transform-header("), body.index("reload("))
-        self.assertIn("change-prompt(repo> )", body)
+        self.assertIn("transform-prompt(", body)           # the prompt follows the current mode
 
 
 class ViewingNeverReorders(Tmp):
@@ -883,6 +884,179 @@ class ViewingNeverReorders(Tmp):
         self.assertEqual([e["name"] for e in hub.order_entries(es, cfg)], before_order)
         self.assertEqual(hub.cache_mtime(), before_mtime)         # no reload is triggered
         self.assertIn("o/busy", hub.load_prs())
+
+
+class SessionsView(Tmp):
+    """Open, background, orphaned and past Claude sessions."""
+
+    def setUp(self):
+        super().setUp()
+        self.cdir = os.path.join(self.tmp, "claude")
+        os.makedirs(os.path.join(self.cdir, "sessions"))
+        os.makedirs(os.path.join(self.cdir, "projects", "-p"))
+        p = mock.patch.dict(os.environ, {"CLAUDE_HUB_CLAUDE_DIR": self.cdir,
+                                         "CLAUDE_HUB_MODE_STATE": os.path.join(self.tmp, "mode.state")})
+        p.start()
+        self.addCleanup(p.stop)
+        self.me = os.getpid()
+        self.parent = os.getppid()
+
+    def reg(self, pid, sid, **kw):
+        d = {"pid": pid, "sessionId": sid, "cwd": "/work", "kind": "bg", "status": "idle", "name": sid[:6],
+             "startedAt": 1_000_000, "updatedAt": 2_000_000}
+        if "procStart" not in kw and hub.proc_start(pid):
+            d["procStart"] = hub.proc_start(pid)
+        d.update(kw)
+        with open(os.path.join(self.cdir, "sessions", f"{pid}.{sid[:4]}.json"), "w") as f:
+            json.dump(d, f)
+
+    def transcript(self, sid, title="", user=True, cwd="/work", mtime=None, body=None):
+        path = os.path.join(self.cdir, "projects", "-p", sid + ".jsonl")
+        with open(path, "w") as f:
+            if title:
+                f.write(json.dumps({"type": "ai-title", "aiTitle": title, "sessionId": sid}) + "\n")
+            if user:
+                f.write(json.dumps({"type": "user", "cwd": cwd, "message": {"role": "user", "content": body or "hello there"}}) + "\n")
+                f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "the reply"}]}}) + "\n")
+        if mtime:
+            os.utime(path, (mtime, mtime))
+        return path
+
+    def states(self):
+        return {s["sid"]: s["state"] for s in hub.classify_live(hub.read_registry())}
+
+    def test_working_detached_attached_terminal_orphan_stale(self):
+        self.reg(self.me, "work-0000", kind="bg", status="busy", jobId="aaaa1111")
+        self.reg(self.parent, "idle-0000", kind="bg", status="idle", jobId="bbbb2222")
+        self.reg(self.me + 100000, "gone-0000", kind="bg", status="idle", jobId="cccc3333", procStart="1")
+        with mock.patch.object(hub, "proc_tty", return_value="/dev/pts/9"), \
+                mock.patch.object(hub, "tty_alive", return_value=True):
+            self.reg(self.me, "term-0000", kind="interactive", jobId=None, parkedJobId="bbbb2222")
+            st = self.states()
+        self.assertEqual(st["work-0000"], "working")
+        self.assertEqual(st["idle-0000"], "attached")       # an interactive terminal parked it
+        self.assertEqual(st["term-0000"], "terminal")
+        self.assertEqual(st["gone-0000"], "stale")
+
+    def test_interactive_without_a_terminal_is_orphaned(self):
+        self.reg(self.me, "orph-0000", kind="interactive")
+        with mock.patch.object(hub, "proc_tty", return_value="/dev/null"):
+            self.assertEqual(self.states()["orph-0000"], "orphan")
+
+    def test_pid_reuse_is_detected_by_start_time(self):
+        self.reg(self.me, "reuse-000", kind="bg", procStart="12345")      # alive pid, different process
+        self.assertEqual(self.states()["reuse-000"], "stale")
+
+    def test_spare_pool_sessions_are_hidden_everywhere(self):
+        self.reg(self.me, "spare-000", kind="bg", spare=True, jobId="dddd4444")
+        self.transcript("spare-000", user=False)
+        self.assertEqual(hub.classify_live(hub.read_registry()), [])
+        self.assertEqual([s for s in hub.load_sessions() if s["sid"] == "spare-000"], [])
+        self.assertNotIn("spare-000", [s["sid"] for s in hub.load_sessions()])
+
+    def test_past_sessions_skip_blank_stubs_and_live_ones_and_sort_by_recency(self):
+        self.reg(self.me, "live-0000", kind="bg", status="busy", jobId="eeee5555")
+        self.transcript("live-0000", title="Live one")
+        self.transcript("old-00000", title="Old work", mtime=1_000)
+        self.transcript("new-00000", title="New work", mtime=5_000)
+        self.transcript("stub-0000", user=False, mtime=9_000)
+        names = [s["name"] for s in hub.load_sessions()]
+        self.assertEqual(names[0], "live-0")                   # live first (registry name)
+        self.assertEqual([n for n in names if n in ("New work", "Old work")], ["New work", "Old work"])
+        self.assertNotIn("stub-000", names)
+        self.assertEqual(sum(1 for s in hub.load_sessions() if s["sid"] == "live-0000"), 1)
+
+    def test_summary_counts(self):
+        self.reg(self.me, "work-0000", kind="bg", status="busy", jobId="aaaa1111")
+        self.reg(self.me + 100000, "gone-0000", kind="bg", procStart="1", jobId="cccc3333")
+        self.transcript("old-00000", title="Old")
+        text = hub.sessions_summary()
+        self.assertIn("1 working", text)
+        self.assertIn("1 stale", text)
+        self.assertIn("1 resumable", text)
+
+    def test_rows_keep_the_seven_field_layout_and_carry_the_dispatch_slug(self):
+        self.reg(self.me, "work-0000", kind="bg", status="busy", jobId="aaaa1111", name="Tab\tName")
+        line = hub.session_lines(hub.load_sessions())[0]
+        f = line.split("\t")
+        self.assertEqual(len(f), 7)
+        self.assertTrue(f[5].startswith("session:working:aaaa1111:"))
+        self.assertTrue(f[5].endswith(":work-0000"))
+
+    def test_preview_shows_last_prompt_and_reply(self):
+        self.transcript("old-00000", title="Old work", body="please fix the thing")
+        slug = "session:past::0:old-00000"
+        text = hub.preview_text("/work", slug, "Old work", 60)
+        self.assertIn("please fix the thing", text)
+        self.assertIn("the reply", text)
+        self.assertIn("enter: resume", text)
+
+    def test_open_session_attaches_background_and_resumes_past(self):
+        with mock.patch.object(hub.os, "execvp") as ex:
+            hub.open_session("session:working:aaaa1111:5:work-0000", "/work")
+        ex.assert_called_with("claude", ["claude", "attach", "aaaa1111"])
+        d = os.path.join(self.tmp, "proj")
+        os.makedirs(d)
+        with mock.patch.object(hub.os, "execvp") as ex, mock.patch.object(hub.os, "chdir") as cd:
+            hub.open_session("session:past::0:old-00000", d)
+        cd.assert_called_with(d)
+        self.assertEqual(ex.call_args[0][1][-2:], ["--resume", "old-00000"])
+
+    def test_resume_with_missing_directory_falls_back_to_home(self):
+        with mock.patch.object(hub.os, "execvp"), mock.patch.object(hub.os, "chdir") as cd:
+            hub.open_session("session:past::0:old-00000", "/definitely/not/here")
+        cd.assert_called_with(hub.HOME)
+
+    def test_terminal_and_orphan_rows_explain_instead_of_launching(self):
+        with self.assertRaises(SystemExit) as cm:
+            hub.open_session("session:terminal::5:x", "/work")
+        self.assertIn("another terminal", str(cm.exception))
+        with self.assertRaises(SystemExit) as cm:
+            hub.open_session("session:orphan::5:x", "/work")
+        self.assertIn("ctrl-x", str(cm.exception))
+
+    def test_stop_removes_a_stale_entry_only_after_confirmation(self):
+        self.reg(self.me + 100000, "gone-0000", kind="bg", procStart="1", jobId="cccc3333")
+        slug = f"session:stale:cccc3333:{self.me + 100000}:gone-0000"
+        files = glob.glob(os.path.join(self.cdir, "sessions", "*.json"))
+        self.assertEqual(len(files), 1)
+        with mock.patch("builtins.input", return_value="n"):
+            hub.session_stop(slug)
+        self.assertTrue(os.path.exists(files[0]))
+        with mock.patch("builtins.input", return_value="y"), mock.patch.object(hub.time, "sleep"):
+            hub.session_stop(slug)
+        self.assertFalse(os.path.exists(files[0]))
+
+    def test_stop_signals_an_orphan_only_when_pid_and_registry_agree(self):
+        self.reg(self.me, "orph-0000", kind="interactive")
+        slug = f"session:orphan::{self.me}:orph-0000"
+        with mock.patch.object(hub, "proc_tty", return_value="/dev/null"), \
+                mock.patch("builtins.input", return_value="y"), mock.patch.object(hub.time, "sleep"), \
+                mock.patch.object(hub.os, "kill") as kill:
+            hub.session_stop(slug)
+            kill.assert_called_once_with(self.me, hub.signal.SIGTERM)
+        with mock.patch.object(hub, "proc_tty", return_value="/dev/null"), \
+                mock.patch("builtins.input", return_value="y"), mock.patch.object(hub.time, "sleep"), \
+                mock.patch.object(hub.os, "kill") as kill:
+            hub.session_stop(f"session:orphan::{self.me + 1}:orph-0000")   # pid does not match the registry
+            kill.assert_not_called()
+
+    def test_stop_on_a_project_row_does_nothing_and_never_prompts(self):
+        with mock.patch("builtins.input", side_effect=AssertionError("no prompt expected")):
+            self.assertEqual(hub.session_stop("jdk-official/claude-hub"), 0)
+
+    def test_mode_toggle(self):
+        self.assertEqual(hub.current_mode(), "projects")
+        self.assertEqual(hub.toggle_mode(), "sessions")
+        self.assertEqual(hub.current_mode(), "sessions")
+        self.assertEqual(hub.toggle_mode(), "projects")
+
+    def test_tail_extracts_last_prompt_and_reply(self):
+        path = self.transcript("t-0000000", body="first question")
+        with open(path, "a") as f:
+            f.write(json.dumps({"type": "user", "message": {"content": "second question"}}) + "\n")
+            f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "second answer"}]}}) + "\n")
+        self.assertEqual(hub.transcript_tail(path), ("second question", "second answer"))
 
 
 if __name__ == "__main__":

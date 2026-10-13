@@ -51,6 +51,25 @@ Iteration 1 also delivered: scrolling over the full list (up to 100 rows), part 
   everywhere with `CLAUDE_HUB_AUTOSTART=0` (add `export CLAUDE_HUB_AUTOSTART=0` to the shell, or delete the block).
 - To revert: remove the block from `~/.bashrc` (backups: `~/.bashrc.bak-<timestamp>`).
 
+## Done: sessions view, built 2026-10-13
+
+Prompted by: "this is very project focussed; what if I have open sessions, or orphaned claude sessions".
+
+- `ctrl-s` switches between Projects and Sessions; the header always carries a one-line summary
+  (`sessions: 1 working · 2 attached · 2 in terminals · 14 resumable`). `claude-hub sessions` prints the same
+  list as plain text (useful over remote control).
+- Data: the live registry in `~/.claude/sessions/*.json` plus transcripts in `~/.claude/projects/*/*.jsonl`.
+  Pre-warmed `spare` sessions and blank transcripts are hidden. `procStart` is compared with `/proc` start time
+  so a reused pid is never mistaken for a live session.
+- States: working, attached (a background session parked in a terminal), detached (background, nobody viewing),
+  terminal (interactive, in a terminal), orphan (interactive, terminal gone), stale (registry entry, process
+  gone), past (resumable transcript).
+- Enter: background sessions run `claude attach <job>`; past sessions run `claude --resume <id>` in their
+  directory (home if it no longer exists); terminal sessions explain where they are.
+- `ctrl-x` (always asks first): stops a background session (`claude stop`), SIGTERMs an orphaned process only
+  when pid and registry agree, or removes a stale registry entry. Nothing else is ever touched.
+- Not done: focusing the window that holds a terminal session; showing sessions as a badge on project rows.
+
 ## Later
 
 - Deferred gamification: ship counter, badges and milestones, weekly goal, finish-line nudge.
