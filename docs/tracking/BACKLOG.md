@@ -1,7 +1,7 @@
 # Backlog
 
 Not-yet-started work, grouped. Promote an item to [ACTIVE.md](ACTIVE.md) when it starts.
-Requirement IDs refer to the [PRD](../prd/hub.md). Status: iteration 1 built and merged to main on 2026-10-13 (P1-P11 plus Q2); iteration 2 not started.
+Requirement IDs refer to the [PRD](../prd/hub.md). Status: iteration 1 (P1-P11 plus Q2) and iteration 2 (Q1, Q3-Q6) built on 2026-10-13.
 
 ## Done: iteration 1 (foundation, stats, content)
 
@@ -19,18 +19,18 @@ Requirement IDs refer to the [PRD](../prd/hub.md). Status: iteration 1 built and
 | P10 | Per-repo 8-week sparkline | FR-30, AC-13, AC-14 | P9 |
 | P11 | `hub stats` 12-week heatmap | FR-31, AC-15, AC-16 | P9 |
 
-## Next: iteration 2 (remaining fzf-driven UI)
+## Done: iteration 2 (fzf-driven UI), built 2026-10-13
 
-Q1 (the fzf spike) is done; Q2 shipped in iteration 1. Remaining: Q3 to Q6.
+All of Q1 to Q6 are done; see the covered requirement IDs below.
 
 | ID | Item | Covers | Depends on |
 |---|---|---|---|
 | Q1 | DONE 2026-10-13: spike verified --track, reload, become, --header-first, --footer, --nth (11/11); see [fzf-spike](../reference/fzf-spike.md) | assumption row 11 | iteration 1 |
 | Q2 | Responsive preview position (narrow: below, wide: beside). DONE in iteration 1 via the fzf `<100(down,40%)` alternative layout | FR-21, FR-22, AC-6 | none |
-| Q3 | Stats header and key-hint footer | FR-35, AC-26 | Q1, P9 |
-| Q4 | Full-list scrolling and name+tags-only search | FR-10, FR-11, FR-34, AC-19, AC-25 | Q1 |
-| Q5 | In-place background refresh and ctrl-r | FR-2, FR-3, AC-2 | Q1, P2 |
-| Q6 | Tag filter key (ctrl-t) | FR-15 | Q4, P3 |
+| Q3 | DONE: Stats header and key-hint footer | FR-35, AC-26 | Q1, P9 |
+| Q4 | DONE: Full-list scrolling and name+tags-only search | FR-10, FR-11, FR-34, AC-19, AC-25 | Q1 |
+| Q5 | DONE: In-place background refresh and ctrl-r | FR-2, FR-3, AC-2 | Q1, P2 |
+| Q6 | DONE: Tag filter key (ctrl-t) | FR-15 | Q4, P3 |
 
 Note: Q2 was pulled into iteration 1 (one preview-window flag). Not yet verified in the real narrow Ghostty window.
 
@@ -48,4 +48,5 @@ Iteration 1 also delivered: scrolling over the full list (up to 100 rows), part 
 
 - Deferred gamification: ship counter, badges and milestones, weekly goal, finish-line nudge.
 - Not selected: open-in-browser and plain-shell keys (S4), new scratch dir (C3), `--list --json` and `-q` (C4), Hyprland keybind (C5), login pre-warm (C6), per-repo `claude_args`.
+- Verify the layout in the real narrow Ghostty window; shorten very long worktree names in the list.
 - Adopt the backlog-delivery rails (bd-adopt, then pbi-plan) if the project outgrows this table.

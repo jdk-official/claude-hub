@@ -693,7 +693,7 @@ class ReviewRegressions(Tmp):
         e = {"name": "r", "slug": "o/r", "path": "/p/r", "local": None, "origin": "o", "ts": 1,
              "gh": {"description": "tab\there\nnewline", "visibility": "PUBLIC", "name": "r", "owner": "o"}}
         line = hub.fzf_lines([e], cfg, {})[1]
-        self.assertEqual(len(line.split("\t")), 5)
+        self.assertEqual(len(line.split("\t")), 7)
 
     def test_l5_git_file_counts_as_repo(self):
         wt = os.path.join(self.tmp, "wt")
@@ -709,6 +709,134 @@ class ReviewRegressions(Tmp):
         self.assertFalse(q("x", "jdk-official-evil@users.noreply.github.com", ""))
         self.assertFalse(q("x", "x@example.com", "Claudia Smith <claudia@example.com>"))
         self.assertTrue(q("x", "x@example.com", "Claude <noreply@anthropic.com>"))
+
+
+class Iteration2Units(Tmp):
+    """Unit coverage for the iteration-2 plumbing the review found untested."""
+
+    def setUp(self):
+        super().setUp()
+        self.state = os.path.join(self.tmp, "tag.state")
+        p = mock.patch.dict(os.environ, {"HUB_TAG_STATE": self.state})
+        p.start()
+        self.addCleanup(p.stop)
+        self.cfg = dict(hub.DEFAULT_CONFIG, tags={"a": ["x"], "b": ["y", "x"]})
+
+    def test_cycle_tag_wraps_through_all_tags_and_none(self):
+        self.assertEqual(hub.all_tags(self.cfg), ["x", "y"])
+        self.assertEqual(hub.current_tag(), "")
+        seq = [hub.cycle_tag(self.cfg) for _ in range(4)]
+        self.assertEqual(seq, ["x", "y", "", "x"])
+        self.assertEqual(hub.current_tag(), "x")
+
+    def test_unknown_saved_tag_falls_back_to_none(self):
+        with open(self.state, "w") as f:
+            f.write("gone")
+        self.assertEqual(hub.cycle_tag(self.cfg), "")
+
+    def test_no_tags_configured_cycles_to_nothing(self):
+        self.assertEqual(hub.cycle_tag(dict(hub.DEFAULT_CONFIG, tags={})), "")
+
+    def test_tags_with_control_characters_are_sanitised_at_load(self):
+        p = os.path.join(self.tmp, "config")
+        with open(p, "w") as f:
+            f.write('[tags]\nhub=["to\\tols", "ok"]\n')
+        cfg, _ = hub.load_config(p)
+        self.assertEqual(cfg["tags"]["hub"], ["to ols", "ok"])
+
+    def test_filtered_lines_hide_home_row_and_other_tags(self):
+        a = entry("a", slug="o/a")
+        b = entry("b", slug="o/b")
+        lines = hub.fzf_lines([a, b], self.cfg, {}, tag="y")
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("o/b\t"))
+
+    def test_lock_is_only_removed_by_its_owner(self):
+        os.makedirs(self.cache)
+        lock = hub.refresh_lock()
+        with mock.patch.object(hub.shutil, "which", return_value=None), \
+                mock.patch.object(hub, "refresh_extra"):
+            # another process's lock appears while this refresh runs: do_refresh must leave it alone
+            def steal(cfg):
+                with open(lock, "w") as f:
+                    f.write("999999")
+            hub.refresh_extra.side_effect = steal
+            hub.do_refresh(dict(hub.DEFAULT_CONFIG))
+        self.assertTrue(os.path.exists(lock))
+        os.remove(lock)
+        with mock.patch.object(hub.shutil, "which", return_value=None), mock.patch.object(hub, "refresh_extra"):
+            hub.do_refresh(dict(hub.DEFAULT_CONFIG))
+        self.assertFalse(os.path.exists(lock))
+
+    def test_cache_dir_is_private(self):
+        hub.ensure_cache_dir()
+        self.assertEqual(os.stat(self.cache).st_mode & 0o777, 0o700)
+
+    def test_session_dir_is_private_and_falls_back_when_path_too_long(self):
+        base = os.path.join(self.tmp, "run")
+        os.makedirs(base)
+        with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": base}):
+            d = hub.make_session_dir()
+        self.assertTrue(d.startswith(base))
+        self.assertEqual(os.stat(d).st_mode & 0o777, 0o700)
+        long = os.path.join(self.tmp, "x" * 120)
+        os.makedirs(long)
+        with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": long}), \
+                mock.patch.object(hub.tempfile, "gettempdir", return_value=long):
+            self.assertIsNone(hub.make_session_dir())
+
+    def test_old_fzf_is_reported_with_the_missing_flags(self):
+        help_text = "usage: fzf [options]\n --listen --header-first --track\n"
+        with mock.patch.object(hub, "run", return_value=(0, help_text, "")):
+            self.assertEqual(hub.fzf_missing_features(), ["--footer", "--id-nth"])
+        with mock.patch.object(hub, "run", return_value=(127, "", "")):
+            self.assertEqual(hub.fzf_missing_features(), [])
+
+    def test_watcher_reloads_after_refresh_finishes_and_header_comes_first(self):
+        import socketserver
+        import threading
+        sock = os.path.join(self.tmp, "w.sock")
+        bodies = []
+
+        class H(socketserver.StreamRequestHandler):
+            def handle(self):
+                head = b""
+                while not head.endswith(b"\r\n\r\n"):
+                    head += self.rfile.read(1)
+                n = int([l for l in head.split(b"\r\n") if l.lower().startswith(b"content-length")][0].split(b":")[1])
+                if n:
+                    bodies.append(self.rfile.read(n).decode())
+                self.wfile.write(b"HTTP/1.0 200 OK\r\n\r\n")
+        srv = socketserver.ThreadingUnixStreamServer(sock, H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+
+        class Proc:
+            def __init__(self):
+                self.t0 = time.time()
+
+            def poll(self):
+                return None if time.time() - self.t0 < 2.0 else 0
+        os.makedirs(self.cache)
+        with open(hub.cache_file(), "w") as f:
+            f.write("{}")
+        seen = hub.cache_mtime()
+        lock = hub.refresh_lock()
+        open(lock, "w").close()                       # a refresh is running: no reload yet
+        t = threading.Thread(target=hub.watch_refresh, args=(sock, Proc(), seen))
+        t.start()
+        time.sleep(0.6)
+        self.assertEqual(bodies, [])
+        time.sleep(0.01)
+        with open(hub.cache_file(), "w") as f:        # refresh writes the cache, then drops the lock
+            f.write("{}")
+        os.utime(hub.cache_file(), (seen + 5, seen + 5))
+        os.remove(lock)
+        t.join(5)
+        self.assertEqual(len(bodies), 1, bodies)
+        body = bodies[0]
+        self.assertLess(body.index("transform-header("), body.index("reload("))
+        self.assertIn("change-prompt(repo> )", body)
 
 
 if __name__ == "__main__":

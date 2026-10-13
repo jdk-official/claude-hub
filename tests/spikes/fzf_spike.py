@@ -175,6 +175,17 @@ keys("C-l")
 time.sleep(0.5)
 record("--expect returns the pressed key", "ctrl-l" in screen())
 
+
+# 11. ordering: with --track, an action queued AFTER reload is dropped; BEFORE reload it applies
+for label, chain, expect in (("header after reload", 'reload(printf "a\\n")+change-header(AFTER)', False),
+                             ("header before reload", 'change-header(BEFORE)+reload(printf "a\\n")', True)):
+    start(f"printf 'a\\nb\\n' | fzf --header-first --header OLD --track --id-nth 1 --layout reverse "
+          f"--bind 'ctrl-t:{chain}'")
+    keys("C-t")
+    time.sleep(0.5)
+    applied = ("AFTER" in screen()) or ("BEFORE" in screen())
+    record(f"--track: {label} {'applies' if expect else 'is dropped'}", applied == expect)
+
 # 10. fzf version
 ver = subprocess.run(["fzf", "--version"], capture_output=True, text=True).stdout.split()[0]
 print(f"\nfzf {ver}: {sum(1 for _, ok, _ in RESULTS if ok)}/{len(RESULTS)} mechanisms verified")

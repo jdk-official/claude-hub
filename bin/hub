@@ -21,6 +21,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import textwrap
 import time
 import tomllib
@@ -152,7 +153,8 @@ def load_config(path=None):
     if "tags" in data:
         v = data["tags"]
         if isinstance(v, dict) and all(isinstance(t, list) for t in v.values()):
-            cfg["tags"] = {k: [str(x) for x in t] for k, t in v.items()}
+            cfg["tags"] = {k: [CONTROL_RE.sub(" ", str(x)).strip() for x in tl if str(x).strip()]
+                           for k, tl in v.items()}
         else:
             warn.append("tags")
     if "count" in data:
@@ -215,11 +217,20 @@ def load_cache():
     return {}
 
 
+def ensure_cache_dir():
+    os.makedirs(CACHE_DIR, mode=0o700, exist_ok=True)
+    try:
+        if os.stat(CACHE_DIR).st_uid == os.getuid():
+            os.chmod(CACHE_DIR, 0o700)
+    except OSError:
+        pass
+
+
 def update_cache(fn):
     """Locked read-modify-write: fn(cache) mutates the latest on-disk cache, then it is replaced atomically."""
     tmp = None
     try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
+        ensure_cache_dir()
         with open(os.path.join(CACHE_DIR, "cache.lock"), "w") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             cache = load_cache() or {"version": 1}
@@ -298,7 +309,7 @@ def refresh_lock():
 def spawn_refresh():
     """Start a detached `hub --refresh` unless one started in the last minute."""
     try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
+        ensure_cache_dir()
         lock = refresh_lock()
         if os.path.exists(lock) and time.time() - os.path.getmtime(lock) < 180:
             return
@@ -311,13 +322,26 @@ def spawn_refresh():
 
 
 def do_refresh(cfg):
+    """Refresh GitHub data and statistics. The lock holds this process's pid, and only its owner removes it."""
+    me = str(os.getpid())
+    owns = False
+    try:
+        ensure_cache_dir()
+        with open(refresh_lock(), "w") as f:
+            f.write(me)
+        owns = True
+    except OSError:
+        pass
     try:
         if shutil.which("gh"):
             save_cache_section(gh=fetch_github(cfg["owners"], load_cache().get("gh")))
         refresh_extra(cfg)
     finally:
         try:
-            os.remove(refresh_lock())
+            with open(refresh_lock()) as f:
+                held_by_us = f.read().strip() == me
+            if owns and held_by_us:
+                os.remove(refresh_lock())
         except OSError:
             pass
 
@@ -480,8 +504,8 @@ def state_text(e):
 
 def row_cells(e, cfg, prs=None):
     g = e["gh"] or {}
-    return [e["name"], markers(e, cfg, prs), e["origin"], (g.get("visibility") or "").lower(),
-            age(e["ts"]), state_text(e), CONTROL_RE.sub(" ", g.get("description") or "")]
+    return [e["name"], markers(e, cfg, prs), age(e["ts"]), state_text(e), e["origin"],
+            (g.get("visibility") or "").lower(), CONTROL_RE.sub(" ", g.get("description") or "")]
 
 
 # --- P6/P7: preview ---------------------------------------------------------
@@ -887,13 +911,57 @@ def stats_header(cache, today=None):
             f"week {w[0]}c {w[1]}r +{kfmt(w[2])}/-{kfmt(w[3])} (avg {avg:.0f}c/wk){note}"]
 
 
-def header_lines(cache, warn, gh_present):
+def tag_state_file():
+    return os.environ.get("HUB_TAG_STATE") or os.path.join(CACHE_DIR, "tag.state")
+
+
+def all_tags(cfg):
+    return sorted({tag for tags in cfg["tags"].values() for tag in tags})
+
+
+def current_tag():
+    try:
+        with open(tag_state_file()) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def cycle_tag(cfg):
+    """none -> first tag -> ... -> last tag -> none. State lives in a per-session file."""
+    tags = all_tags(cfg)
+    cur = current_tag()
+    order = [""] + tags
+    nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else ""
+    try:
+        os.makedirs(os.path.dirname(tag_state_file()), exist_ok=True)
+        with open(tag_state_file(), "w") as f:
+            f.write(nxt)
+    except OSError:
+        pass
+    return nxt
+
+
+def repo_tags(e, cfg):
+    for key in (e["slug"], e["name"]):
+        for k, v in cfg["tags"].items():
+            if key and k.lower() == key.lower():
+                return v
+    return []
+
+
+def header_lines(cache, cfg, warn, gh_present):
     lines = list(stats_header(cache))
     lines.append(gh_status_line(cache, gh_present))
+    tag = current_tag()
+    if tag:
+        lines.append(f"tag filter: #{tag}  (ctrl-t cycles tags)")
     if warn:
         lines.append(warn)
-    lines.append("enter: new session   ctrl-l: resume   esc: cancel")
     return lines
+
+
+FOOTER = "enter new · ctrl-l resume · ctrl-r refresh · ctrl-t tags · esc quit"
 
 
 def gather(cfg):
@@ -904,15 +972,105 @@ def gather(cfg):
     return cache, entries[:MAX_ROWS]
 
 
-def fzf_lines(entries, cfg, cache):
-    """Tab fields: 1 name, 2 display, 3 path, 4 slug, 5 name (for the preview call)."""
+def fzf_lines(entries, cfg, cache, tag=""):
+    """Tab fields: 1 id (identity across reloads), 2 name, 3 tags, 4 columns, 5 path, 6 slug, 7 name.
+    fzf displays fields 2-4 and searches fields 2-3 only (name and tags), so a query never matches
+    the age, branch or marker text."""
+    if tag:
+        entries = [e for e in entries if tag in repo_tags(e, cfg)]
     rows = [row_cells(e, cfg, cache.get("prs")) for e in entries]
     w = [max([len(r[i]) for r in rows] or [0]) for i in range(6)]
-    lines = ["\t".join(["~", "~ (home: system/account work)", HOME, "", "~"])]
-    for e, r in zip(entries, rows):
-        text = "  ".join(r[i].ljust(w[i]) for i in range(6)) + "  " + r[6]
-        lines.append("\t".join([e["name"], text.rstrip(), e["path"], e["slug"], e["name"]]))
+    tagtxt = [" ".join("#" + x for x in repo_tags(e, cfg)) for e in entries]
+    tw = max([len(x) for x in tagtxt] or [0])
+    lines = []
+    if not tag:
+        lines.append("\t".join(["~", "~", " " * tw, "(home: dashboard, system and account work)",
+                               HOME, "", "~"]))
+    for e, r, tg in zip(entries, rows, tagtxt):
+        cols = "  ".join(r[i].ljust(w[i]) for i in range(1, 6)) + "  " + r[6]
+        ident = e["slug"] or e["path"] or e["name"]
+        lines.append("\t".join([ident, r[0].ljust(w[0]), tg.ljust(tw), cols.rstrip(),
+                               e["path"], e["slug"], e["name"]]))
     return lines
+
+
+def me_cmd():
+    return f"{shlex.quote(sys.executable)} {shlex.quote(os.path.realpath(__file__))}"
+
+
+class UnixHTTP:
+    """Minimal HTTP client for fzf's --listen unix socket."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def request(self, method, body=b"", timeout=3):
+        import socket
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(timeout)
+        s.connect(self.path)
+        head = f"{method} / HTTP/1.0\r\nHost: localhost\r\nContent-Length: {len(body)}\r\n\r\n"
+        s.sendall(head.encode() + body)
+        data = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        s.close()
+        return data
+
+
+def cache_mtime():
+    try:
+        return os.path.getmtime(cache_file())
+    except OSError:
+        return 0
+
+
+def watch_refresh(sock, proc, seen):
+    """For the life of fzf: whenever a background refresh finishes (lock gone, cache changed), rebuild the
+    list and header inside the running fzf. Never blocks input; failures are retried on the next change."""
+    http = UnixHTTP(sock)
+    me = me_cmd()
+    ready = False
+    while proc.poll() is None:
+        try:
+            if not ready:
+                http.request("GET")
+                ready = True
+            if not os.path.exists(refresh_lock()):
+                m = cache_mtime()
+                if m != seen:
+                    reply = http.request("POST", (f"change-prompt(repo> )+transform-header({me} --header)"
+                                                  f"+reload({me} --lines)").encode())
+                    if b" 200 " in reply.split(b"\r\n", 1)[0] or not reply:
+                        seen = m
+        except OSError:
+            pass
+        time.sleep(0.25)
+
+
+def make_session_dir():
+    """Private (0700) per-session directory for the fzf socket and tag state; short path, never stale."""
+    for base in (os.environ.get("XDG_RUNTIME_DIR"), tempfile.gettempdir()):
+        if base and os.path.isdir(base):
+            try:
+                d = tempfile.mkdtemp(prefix="hub-", dir=base)
+                if len(os.path.join(d, "fzf.sock").encode()) < 100:
+                    return d
+                shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                continue
+    return None
+
+
+def fzf_missing_features():
+    rc, out, err = run(["fzf", "--help"], timeout=5)
+    text = out + err
+    if rc != 0 or not text:
+        return []
+    return [f for f in ("--listen", "--footer", "--id-nth", "--header-first", "--track") if f not in text]
 
 
 def main(argv):
@@ -921,11 +1079,26 @@ def main(argv):
         print(preview_text(args[1], args[2], args[3], int(os.environ.get("FZF_PREVIEW_COLUMNS") or 60)))
         return 0
     cfg, warn = load_config()
-    if args[:1] == ["--refresh"]:
-        do_refresh(cfg)
-        return 0
     if args[:1] == ["stats"]:
         return run_stats(args[1:], cfg)
+    if "--kick-refresh" in args:   # ctrl-r: start a detached refresh and return immediately
+        spawn_refresh()
+        return 0
+    if "--refresh" in args:
+        do_refresh(cfg)
+        if "--lines" not in args:
+            return 0
+    if "--cycle-tag" in args:
+        cycle_tag(cfg)
+        if "--lines" not in args:
+            return 0
+    if "--header" in args:   # header needs the cache only, not a local scan
+        print("\n".join(header_lines(load_cache(), cfg, warn, shutil.which("gh") is not None)))
+        return 0
+    if "--lines" in args:
+        cache, entries = gather(cfg)
+        print("\n".join(fzf_lines(entries, cfg, cache, current_tag())))
+        return 0
     n = cfg["count"]
     if "-n" in args:
         try:
@@ -941,32 +1114,62 @@ def main(argv):
     lines = fzf_lines(entries, cfg, cache)
     if list_only:
         for ln in lines[: n + 1]:
-            print(ln.split("\t")[1])
+            f = ln.split("\t")
+            print(f[1] + "  " + f[3])
         return 0
+    missing = fzf_missing_features()
+    if missing:
+        sys.exit(f"hub: this fzf is too old (missing {', '.join(missing)}). Upgrade: sudo pacman -S fzf")
+    seen = cache_mtime()
     spawn_refresh()
-    header = "\n".join(header_lines(cache, warn, gh_present))
-    me = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.realpath(__file__))}"
-    res = subprocess.run(
-        ["fzf", "--delimiter", "\t", "--with-nth", "2", "--height", "100%", "--layout", "reverse",
-         "--prompt", "repo> ", "--header", header, "--expect", "ctrl-l",
-         "--preview", f"{me} --preview {{3}} {{4}} {{5}}",
-         "--preview-window", PREVIEW_WINDOW],
-        input="\n".join(lines), stdout=subprocess.PIPE, text=True)
-    if res.returncode not in (0, 1, 130):
-        sys.stderr.write(f"hub: fzf failed (exit {res.returncode})\n")
-        return res.returncode
-    if res.returncode != 0:
+    sess = make_session_dir()
+    env = dict(os.environ)
+    me = me_cmd()
+    live = sess is not None
+    argv_fzf = ["fzf", "--delimiter", "\t", "--tabstop", "1", "--with-nth", "2,3,4", "--nth", "1,2",
+                "--height", "100%", "--layout", "reverse", "--header-first", "--prompt", "repo> ",
+                "--expect", "ctrl-l", "--preview", f"{me} --preview {{5}} {{6}} {{7}}",
+                "--preview-window", PREVIEW_WINDOW]
+    if live:
+        sock = os.path.join(sess, "fzf.sock")
+        env["HUB_TAG_STATE"] = os.path.join(sess, "tag.state")
+        os.environ["HUB_TAG_STATE"] = env["HUB_TAG_STATE"]   # so header_lines sees the same state
+        argv_fzf += [
+            "--footer", FOOTER, "--listen", sock, "--track", "--id-nth", "1",
+            # ctrl-r returns at once (the refresh runs detached and the watcher reloads when it finishes).
+            # Header updates go BEFORE reload: under --track fzf drops actions queued after a reload.
+            "--bind", f"ctrl-r:change-prompt(refreshing> )+execute-silent({me} --kick-refresh)",
+            "--bind", f"ctrl-t:execute-silent({me} --cycle-tag)+transform-header({me} --header)+reload({me} --lines)"]
+    else:
+        warn = (warn + " · " if warn else "") + "live refresh unavailable (no private runtime dir)"
+    header = "\n".join(header_lines(cache, cfg, warn, gh_present))
+    argv_fzf += ["--header", header]
+    proc = subprocess.Popen(argv_fzf, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
+    if live:
+        import threading
+        threading.Thread(target=watch_refresh, args=(sock, proc, seen), daemon=True).start()
+    try:
+        out_text, _ = proc.communicate("\n".join(lines))
+    finally:
+        if sess:
+            shutil.rmtree(sess, ignore_errors=True)
+    rc = proc.returncode
+    if rc not in (0, 1, 130):
+        sys.stderr.write(f"hub: fzf failed (exit {rc})\n")
+        return rc
+    if rc != 0:
         return 0
-    out = res.stdout.split("\n")
+    out = out_text.split("\n")
     key, pick = out[0], (out[1] if len(out) > 1 else "")
     if not pick:
         return 0
-    name, _display, path, slug, _n = (pick.split("\t") + [""] * 5)[:5]
+    f = (pick.split("\t") + [""] * 7)[:7]
+    name, path, slug = f[1].strip(), f[4], f[5]
     resume = key == "ctrl-l"
     if name == "~":
         launch(HOME, resume)
     if not path:
-        path = clone_repo(slug, name)
+        path = clone_repo(slug, f[6])
     launch(path, resume)
     return 0
 
