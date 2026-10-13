@@ -15,8 +15,10 @@ if sys.version_info < (3, 11):
     sys.exit("claude-hub: Python 3.11 or newer is required (found %d.%d)" % sys.version_info[:2])
 
 import fcntl
+import glob
 import json
 import os
+import signal
 import re
 import shlex
 import shutil
@@ -627,6 +629,8 @@ def dashboard_text(width=60, today=None):
 
 
 def preview_text(path, slug, name, width=60):
+    if slug.startswith("session:"):
+        return session_preview(slug, path, width)
     if name == "~":
         return dashboard_text(width)
     out = [name]
@@ -899,6 +903,324 @@ def heatmap(days, today, weeks=12, color=False):
     return lines
 
 
+# --- Sessions: open, background, orphaned and past Claude Code sessions ------
+
+SESSION_GLYPH = {"working": "▶", "attached": "◉", "detached": "○", "terminal": "▣",
+                 "orphan": "⚠", "stale": "✗", "past": "·"}
+SESSION_RANK = {"working": 0, "attached": 1, "detached": 2, "terminal": 3, "orphan": 4, "stale": 5, "past": 6}
+SESSION_EXPLAIN = {
+    "working": "background session, working; nobody is viewing it",
+    "attached": "background session, open in a terminal",
+    "detached": "background session, idle or done; nobody is viewing it",
+    "terminal": "interactive session running in a terminal",
+    "orphan": "interactive session still running but its terminal is gone",
+    "stale": "registry entry whose process has exited",
+    "past": "finished session; resumable from its transcript",
+}
+PAST_LIMIT = 40
+
+
+def claude_dir():
+    return os.environ.get("CLAUDE_HUB_CLAUDE_DIR") or os.path.join(HOME, ".claude")
+
+
+def proc_start(pid):
+    """Process start time in clock ticks (field 22 of /proc/PID/stat), or None if it is not running."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def proc_tty(pid):
+    try:
+        return os.readlink(f"/proc/{pid}/fd/0")
+    except OSError:
+        return ""
+
+
+def tty_alive(tty):
+    return tty.startswith("/dev/pts/") and os.path.exists(tty)
+
+
+def read_registry():
+    out = []
+    for fn in glob.glob(os.path.join(claude_dir(), "sessions", "*.json")):
+        try:
+            with open(fn) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict) and isinstance(d.get("pid"), int) and d.get("sessionId"):
+            d["_file"] = fn
+            out.append(d)
+    return out
+
+
+def transcript_head(path):
+    """(title, cwd, has_user_message) from the first lines of a transcript; cheap on huge files."""
+    title = cwd = ""
+    has_user = False
+    try:
+        with open(path, errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 120 or (title and cwd and has_user):
+                    break
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(d, dict):
+                    continue
+                if d.get("type") == "user":
+                    has_user = True
+                if not title and d.get("type") == "ai-title":
+                    title = str(d.get("aiTitle") or "")
+                if not cwd and isinstance(d.get("cwd"), str):
+                    cwd = d["cwd"]
+    except OSError:
+        pass
+    return title, cwd, has_user
+
+
+def find_transcripts():
+    """{sessionId: (path, mtime)} across every project directory."""
+    found = {}
+    for path in glob.glob(os.path.join(claude_dir(), "projects", "*", "*.jsonl")):
+        try:
+            found[os.path.basename(path)[:-6]] = (path, os.path.getmtime(path))
+        except OSError:
+            continue
+    return found
+
+
+def classify_live(entries, now=None):
+    """Turn registry entries into session dicts with a state; spare (pre-warmed) entries are hidden."""
+    now = now or time.time()
+    live = [e for e in entries if not e.get("spare")]
+    parked = {}
+    for e in live:
+        if e.get("kind") == "interactive" and e.get("parkedJobId") and proc_start(e["pid"]) is not None:
+            parked[e["parkedJobId"]] = proc_tty(e["pid"])
+    out = []
+    for e in live:
+        started = proc_start(e["pid"])
+        running = started is not None and (not e.get("procStart") or str(e["procStart"]) == started)
+        tty = proc_tty(e["pid"]) if running else ""
+        job = e.get("jobId") or ""
+        if not running:
+            state = "stale"
+        elif e.get("kind") == "interactive":
+            state = "terminal" if tty_alive(tty) else "orphan"
+        elif job in parked:
+            state = "attached"
+        elif e.get("status") == "busy":
+            state = "working"
+        else:
+            state = "detached"
+        where = parked.get(job, "") if state == "attached" else tty
+        if not where.startswith("/dev/pts/"):  # pipes, sockets and /dev/null are not a terminal
+            where = ""
+        out.append({"sid": e["sessionId"], "job": job, "name": str(e.get("name") or e["sessionId"][:8]),
+                    "cwd": e.get("cwd") or "", "kind": e.get("kind") or "", "state": state,
+                    "status": e.get("status") or "", "pid": e["pid"], "tty": where,
+                    "updated": (e.get("updatedAt") or e.get("startedAt") or 0) / 1000,
+                    "file": e.get("_file", "")})
+    return out
+
+
+def load_sessions(limit_past=PAST_LIMIT, now=None):
+    """All sessions worth showing: live ones first (by state), then the most recent past sessions."""
+    entries = read_registry()
+    live = classify_live(entries, now)
+    live_ids = {s["sid"] for s in live} | {e["sessionId"] for e in entries}   # includes hidden spares
+    transcripts = find_transcripts()
+    past = []
+    recent = sorted((kv for kv in transcripts.items() if kv[0] not in live_ids),
+                    key=lambda kv: kv[1][1], reverse=True)[:limit_past]
+    for sid, (path, mtime) in recent:
+        title, cwd, has_user = transcript_head(path)
+        if not has_user:      # blank pre-warmed stubs and aborted starts: nothing to resume
+            continue
+        past.append({"sid": sid, "job": "", "name": title or sid[:8], "cwd": cwd, "kind": "past",
+                     "state": "past", "status": "", "pid": 0, "tty": "", "updated": mtime, "file": path})
+    live.sort(key=lambda s: (SESSION_RANK[s["state"]], -s["updated"]))
+    return live + past
+
+
+def session_counts():
+    """Cheap summary for the header: live states from the registry plus the number of past transcripts."""
+    c = {}
+    live = classify_live(read_registry())
+    for s in live:
+        c[s["state"]] = c.get(s["state"], 0) + 1
+    ids = {s["sid"] for s in live}
+    ids |= {e["sessionId"] for e in read_registry()}
+    c["past"] = sum(1 for sid in find_transcripts() if sid not in ids)
+    return c
+
+
+def sessions_summary(counts=None):
+    c = counts if counts is not None else session_counts()
+    parts = []
+    for key, label in (("working", "working"), ("attached", "attached"), ("detached", "detached"),
+                       ("terminal", "in terminals"), ("orphan", "ORPHANED"), ("stale", "stale")):
+        if c.get(key):
+            parts.append(f"{c[key]} {label}")
+    parts.append(f"{c.get('past', 0)} resumable")
+    return "sessions: " + " · ".join(parts)
+
+
+def session_slug(s):
+    return f"session:{s['state']}:{s['job']}:{s['pid']}:{s['sid']}"
+
+
+def session_lines(sessions):
+    """Same 7-field layout as project rows so the picker bindings stay identical."""
+    rows = []
+    for s in sessions:
+        loc = s["tty"].replace("/dev/", "") if s["tty"] else ""
+        tag = "#bg" if s["kind"] in ("bg", "background") else ("#past" if s["state"] == "past" else "#terminal")
+        rows.append((s, CONTROL_RE.sub(" ", s["name"]), tag, loc))
+    nw = max([len(r[1]) for r in rows] or [0])
+    tw = max([len(r[2]) for r in rows] or [0])
+    lines = []
+    for s, name, tag, loc in rows:
+        cols = (f"{SESSION_GLYPH[s['state']]} {s['state']:<8}  {age(s['updated']):<9}  {loc:<8}  {s['cwd']}").rstrip()
+        lines.append("\t".join([s["sid"], name.ljust(nw), tag.ljust(tw), cols, s["cwd"], session_slug(s), name]))
+    return lines
+
+
+def transcript_tail(path, max_bytes=200_000):
+    """Last user prompt and last assistant text from the end of a transcript (best effort)."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - max_bytes))
+            data = f.read().decode("utf-8", "replace")
+    except OSError:
+        return "", ""
+    user = assistant = ""
+    for line in data.splitlines()[1:]:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        msg = d.get("message") if isinstance(d, dict) else None
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        text = ""
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = " ".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
+        text = " ".join(text.split())
+        if not text or text.startswith("<"):
+            continue
+        if d.get("type") == "user":
+            user = text
+        elif d.get("type") == "assistant":
+            assistant = text
+    return user, assistant
+
+
+def session_preview(slug, cwd, width=60):
+    parts = (slug.split(":") + [""] * 5)[:5]
+    state, job, pid, sid = parts[1], parts[2], parts[3], parts[4]
+    info = next((s for s in load_sessions() if s["sid"] == sid), None)
+    out = [info["name"] if info else sid[:8], f"{SESSION_GLYPH.get(state, '?')} {state}: {SESSION_EXPLAIN.get(state, '')}"]
+    out.append(wrap(f"id {sid}", width))
+    if cwd:
+        out.append(wrap(cwd, width))
+    if info:
+        out.append(f"last activity {age(info['updated'])}" + (f" · pid {info['pid']}" if info["pid"] else "")
+                   + (f" · {info['tty'].replace('/dev/', '')}" if info["tty"] else ""))
+        user, assistant = transcript_tail(info["file"]) if info["file"].endswith(".jsonl") else ("", "")
+        if not info["file"].endswith(".jsonl"):
+            tr = find_transcripts().get(sid)
+            if tr:
+                user, assistant = transcript_tail(tr[0])
+        if user:
+            out += ["", "last prompt:", wrap(user[:400], width)]
+        if assistant:
+            out += ["", "last reply:", wrap(assistant[:600], width)]
+    hint = {"working": "enter: attach (claude attach)   ctrl-x: stop",
+            "attached": "enter: attach (claude attach)   ctrl-x: stop",
+            "detached": "enter: attach (claude attach)   ctrl-x: stop",
+            "terminal": "open in another terminal: switch to it (it cannot be attached)",
+            "orphan": "ctrl-x: stop the leftover process",
+            "stale": "ctrl-x: remove the stale registry entry",
+            "past": "enter: resume (claude --resume) in its directory"}.get(state, "")
+    if hint:
+        out += ["", hint]
+    return "\n".join(out)
+
+
+def session_stop(slug):
+    """Confirmed, minimal clean-up for one session. Never touches anything but the named session."""
+    if not slug.startswith("session:"):
+        return 0
+    parts = (slug.split(":") + [""] * 5)[:5]
+    state, job, pid, sid = parts[1], parts[2], int(parts[3] or 0), parts[4]
+    entry = next((s for s in classify_live(read_registry()) if s["sid"] == sid), None)
+    if state in ("working", "attached", "detached") and job:
+        what = f"stop background session {job}"
+        action = lambda: subprocess.run(["claude", "stop", job]).returncode == 0
+    elif state == "orphan" and entry and entry["pid"] == pid:
+        what = f"send SIGTERM to leftover claude process {pid}"
+        action = lambda: (os.kill(pid, signal.SIGTERM), True)[1]
+    elif state == "stale" and entry and entry["file"]:
+        what = f"remove stale registry entry {os.path.basename(entry['file'])}"
+        action = lambda: (os.remove(entry["file"]), True)[1]
+    else:
+        print("nothing to stop for this row (past sessions keep their transcript; terminal sessions are live).")
+        input("press enter ")
+        return 0
+    try:
+        ans = input(f"{what}? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = ""
+    if ans != "y":
+        return 0
+    try:
+        ok = action()
+    except OSError as e:
+        print(f"failed: {e}")
+        ok = False
+    print("done" if ok else "failed")
+    time.sleep(0.6)
+    return 0 if ok else 1
+
+
+def mode_state_file():
+    return os.environ.get("CLAUDE_HUB_MODE_STATE") or os.path.join(CACHE_DIR, "mode.state")
+
+
+def current_mode():
+    try:
+        with open(mode_state_file()) as f:
+            return "sessions" if f.read().strip() == "sessions" else "projects"
+    except OSError:
+        return "projects"
+
+
+def set_mode(mode):
+    try:
+        os.makedirs(os.path.dirname(mode_state_file()), exist_ok=True)
+        with open(mode_state_file(), "w") as f:
+            f.write(mode)
+    except OSError:
+        pass
+
+
+def toggle_mode():
+    new = "projects" if current_mode() == "sessions" else "sessions"
+    set_mode(new)
+    return new
+
+
 # --- P8: launch -------------------------------------------------------------
 
 def claude_argv(resume=False, home=None):
@@ -921,6 +1243,26 @@ def launch(target, resume=False):
 def github_reachable():
     rc, _, _ = run(["gh", "api", "rate_limit", "--silent"], timeout=6)
     return rc == 0
+
+
+def open_session(slug, cwd):
+    """Enter on a session row: attach a background session, resume a past one, or explain."""
+    parts = (slug.split(":") + [""] * 5)[:5]
+    state, job, sid = parts[1], parts[2], parts[4]
+    if state in ("working", "attached", "detached") and job:
+        os.execvp("claude", ["claude", "attach", job])
+        return
+    if state == "past":
+        target = cwd if cwd and os.path.isdir(cwd) else HOME
+        if target != cwd:
+            sys.stderr.write(f"claude-hub: {cwd or 'its directory'} no longer exists; resuming from {HOME}\n")
+        os.chdir(target)
+        os.execvp("claude", claude_argv(False) + ["--resume", sid])
+        return
+    if state == "terminal":
+        sys.exit("claude-hub: that session is running in another terminal; switch to that window "
+                 "(a live terminal session cannot be attached from here)")
+    sys.exit("claude-hub: that session is not running; press ctrl-x on it to clean it up")
 
 
 def clone_repo(slug, name):
@@ -1010,6 +1352,8 @@ def repo_tags(e, cfg):
 def header_lines(cache, cfg, warn, gh_present):
     lines = list(stats_header(cache))
     lines.append(gh_status_line(cache, gh_present))
+    lines.append(sessions_summary() + ("   [showing sessions; ctrl-s for projects]" if current_mode() == "sessions"
+                                       else "   (ctrl-s to browse)"))
     tag = current_tag()
     if tag:
         lines.append(f"tag filter: #{tag}  (ctrl-t cycles tags)")
@@ -1018,7 +1362,7 @@ def header_lines(cache, cfg, warn, gh_present):
     return lines
 
 
-FOOTER = "enter new · ctrl-l resume · ctrl-r refresh · ctrl-t tags · esc quit"
+FOOTER = "enter open · ctrl-l resume · ctrl-r refresh · ctrl-t tags\nctrl-s sessions · ctrl-x stop · esc quit"
 
 
 def gather(cfg):
@@ -1099,7 +1443,8 @@ def watch_refresh(sock, proc, seen):
             if not os.path.exists(refresh_lock()):
                 m = cache_mtime()
                 if m != seen:
-                    reply = http.request("POST", (f"change-prompt(repo> )+transform-header({me} --header)"
+                    # the prompt depends on the current mode (projects or sessions)
+                    reply = http.request("POST", (f"transform-prompt({me} --prompt)+transform-header({me} --header)"
                                                   f"+reload({me} --lines)").encode())
                     if b" 200 " in reply.split(b"\r\n", 1)[0] or not reply:
                         seen = m
@@ -1138,6 +1483,19 @@ def main(argv):
     cfg, warn = load_config()
     if args[:1] == ["stats"]:
         return run_stats(args[1:], cfg)
+    if "--session-stop" in args:   # ctrl-x (run with the terminal, so it can ask for confirmation)
+        return session_stop(args[args.index("--session-stop") + 1])
+    if "--toggle-mode" in args:
+        toggle_mode()
+        return 0
+    if "--prompt" in args:
+        print("session> " if current_mode() == "sessions" else "repo> ", end="")
+        return 0
+    if args[:1] == ["sessions"]:     # plain text list, handy over ssh / remote control
+        for s in load_sessions():
+            print(f"{SESSION_GLYPH[s['state']]} {s['state']:<8} {age(s['updated']):<9} {s['name'][:38]:<38} {s['cwd']}")
+        print(sessions_summary())
+        return 0
     if "--kick-refresh" in args:   # ctrl-r: start a detached refresh and return immediately
         spawn_refresh()
         return 0
@@ -1153,6 +1511,9 @@ def main(argv):
         print("\n".join(header_lines(load_cache(), cfg, warn, shutil.which("gh") is not None)))
         return 0
     if "--lines" in args:
+        if current_mode() == "sessions":
+            print("\n".join(session_lines(load_sessions())))
+            return 0
         cache, entries = gather(cfg)
         print("\n".join(fzf_lines(entries, cfg, cache, current_tag())))
         return 0
@@ -1179,12 +1540,20 @@ def main(argv):
         sys.exit(f"claude-hub: this fzf is too old (missing {', '.join(missing)}). Upgrade: sudo pacman -S fzf")
     seen = cache_mtime()
     spawn_refresh()
+    start_mode = "sessions" if "--sessions" in args else "projects"
     sess = make_session_dir()
     env = dict(os.environ)
     me = me_cmd()
     live = sess is not None
+    if live:
+        env["CLAUDE_HUB_MODE_STATE"] = os.path.join(sess, "mode.state")
+        os.environ["CLAUDE_HUB_MODE_STATE"] = env["CLAUDE_HUB_MODE_STATE"]
+    set_mode(start_mode)
+    if start_mode == "sessions":
+        lines = session_lines(load_sessions())
     argv_fzf = ["fzf", "--delimiter", "\t", "--tabstop", "1", "--with-nth", "2,3,4", "--nth", "1,2",
-                "--height", "100%", "--layout", "reverse", "--header-first", "--prompt", "repo> ",
+                "--height", "100%", "--layout", "reverse", "--header-first",
+                "--prompt", "session> " if start_mode == "sessions" else "repo> ",
                 "--expect", "ctrl-l", "--preview", f"{me} --preview {{5}} {{6}} {{7}}",
                 "--preview-window", PREVIEW_WINDOW]
     if live:
@@ -1196,7 +1565,10 @@ def main(argv):
             # ctrl-r returns at once (the refresh runs detached and the watcher reloads when it finishes).
             # Header updates go BEFORE reload: under --track fzf drops actions queued after a reload.
             "--bind", f"ctrl-r:change-prompt(refreshing> )+execute-silent({me} --kick-refresh)",
-            "--bind", f"ctrl-t:execute-silent({me} --cycle-tag)+transform-header({me} --header)+reload({me} --lines)"]
+            "--bind", f"ctrl-t:execute-silent({me} --cycle-tag)+transform-header({me} --header)+reload({me} --lines)",
+            "--bind", (f"ctrl-s:execute-silent({me} --toggle-mode)+transform-prompt({me} --prompt)"
+                       f"+transform-header({me} --header)+reload({me} --lines)"),
+            "--bind", f"ctrl-x:execute({me} --session-stop {{6}})+transform-header({me} --header)+reload({me} --lines)"]
     else:
         warn = (warn + " · " if warn else "") + "live refresh unavailable (no private runtime dir)"
     header = "\n".join(header_lines(cache, cfg, warn, gh_present))
@@ -1222,6 +1594,9 @@ def main(argv):
         return 0
     f = (pick.split("\t") + [""] * 7)[:7]
     name, path, slug = f[1].strip(), f[4], f[5]
+    if slug.startswith("session:"):
+        open_session(slug, path)
+        return 0
     resume = key == "ctrl-l"
     if name == "~":
         launch(HOME, resume)

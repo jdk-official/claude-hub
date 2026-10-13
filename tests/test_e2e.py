@@ -377,6 +377,113 @@ class E2E(unittest.TestCase):
         self.key("Escape")
         self.wait_for(lambda: "HUB_EXIT=0" in self.screen(), "clean exit")
 
+
+    # --- sessions -------------------------------------------------------
+    def seed_sessions(self):
+        """A detached background session, a past session with a real directory, and a stale entry."""
+        cdir = os.path.join(self.home, ".claude")
+        os.makedirs(os.path.join(cdir, "sessions"))
+        os.makedirs(os.path.join(cdir, "projects", "-proj"))
+        me = os.getpid()
+        with open(f"/proc/{me}/stat") as f:
+            start = f.read().rsplit(")", 1)[1].split()[19]
+        reg = [
+            {"pid": me, "sessionId": "11111111-aaaa", "jobId": "ab12cd34", "kind": "bg", "status": "idle",
+             "name": "Overnight build", "cwd": self.root, "procStart": start, "startedAt": 1_000, "updatedAt": 2_000},
+            {"pid": 999999, "sessionId": "33333333-cccc", "jobId": "ef56ab78", "kind": "bg", "status": "idle",
+             "name": "Dead session", "cwd": self.root, "procStart": "1", "startedAt": 1_000, "updatedAt": 2_000},
+        ]
+        for r in reg:
+            with open(os.path.join(cdir, "sessions", f"{r['pid']}.json"), "w") as f:
+                json.dump(r, f)
+        self.past_cwd = os.path.join(self.tmp, "past-project")
+        os.makedirs(self.past_cwd)
+        with open(os.path.join(cdir, "projects", "-proj", "22222222-bbbb.jsonl"), "w") as f:
+            f.write(json.dumps({"type": "ai-title", "aiTitle": "Fix the login bug"}) + "\n")
+            f.write(json.dumps({"type": "user", "cwd": self.past_cwd, "message": {"content": "login is broken"}}) + "\n")
+            f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "found it"}]}}) + "\n")
+        self.stale_file = os.path.join(cdir, "sessions", "999999.json")
+
+    def settle(self):
+        """Wait until fzf has finished its reload (a keypress during tracking is ignored)."""
+        self.wait_for(lambda: "+T*" not in self.screen(), "reload to settle", 6)
+        time.sleep(0.3)
+
+    def open_sessions_view(self):
+        self.seed_sessions()
+        self.start()
+        self.ready()
+        self.key("C-s")
+        self.wait_for(lambda: "session>" in self.screen() and "Overnight build" in self.screen(),
+                      "sessions view", 8)
+        self.settle()
+
+    def test_ctrl_s_shows_sessions_and_toggles_back(self):
+        self.open_sessions_view()
+        screen = self.screen()
+        self.assertIn("Fix the login bug", screen)
+        self.assertIn("Dead session", screen)
+        self.assertIn("sessions:", screen)            # the summary line is in the header
+        self.assertIn("detached", screen)
+        self.assertIn("stale", screen)
+        self.assertIn("resumable", screen)
+        self.settle()
+        self.key("C-s")
+        self.wait_for(lambda: "repo>" in self.screen() and "beta" in self.screen(), "back to projects", 8)
+        self.assertNotIn("Overnight build", self.screen().split("repo>")[1].split("╭")[0])
+
+    def test_prompt_stays_in_sessions_mode_after_a_background_refresh(self):
+        self.gh_repos_file("remote-only")
+        self.seed_sessions()
+        self.start(extra_env={"CLAUDE_HUB_E2E_SLEEP": "1"})
+        self.ready()
+        self.key("C-s")
+        self.wait_for(lambda: "session>" in self.screen(), "sessions prompt", 8)
+        lock = os.path.join(self.cache, "refresh.lock")
+        self.wait_for(lambda: not os.path.exists(lock), "background refresh to finish", 10)
+        time.sleep(1.5)                       # the watcher reloads and re-applies the prompt
+        self.assertIn("session>", self.screen())
+        self.assertNotIn("repo>", self.screen())
+
+    def test_enter_on_a_background_session_attaches_it(self):
+        self.open_sessions_view()
+        self.type("Overnight")
+        self.wait_for(lambda: "last activity" in self.screen() or "background session" in self.screen(), "preview", 8)
+        self.settle()
+        self.key("Enter")
+        self.assertEqual(self.claude_call()["args"], "attach ab12cd34")
+
+    def test_enter_on_a_past_session_resumes_it_in_its_directory(self):
+        self.open_sessions_view()
+        self.type("login")
+        self.wait_for(lambda: "login is broken" in self.screen(), "past session preview shows the last prompt", 8)
+        self.settle()
+        self.key("Enter")
+        call = self.claude_call()
+        self.assertEqual(os.path.realpath(call["cwd"]), os.path.realpath(self.past_cwd))
+        self.assertTrue(call["args"].endswith("--resume 22222222-bbbb"), call["args"])
+
+    def test_ctrl_x_cleans_up_a_stale_entry_after_confirmation(self):
+        self.open_sessions_view()
+        self.type("Dead")
+        self.wait_for(lambda: "stale: " in self.screen(), "stale preview", 8)
+        self.settle()
+        self.key("C-x")
+        self.wait_for(lambda: "remove stale registry entry" in self.screen(), "confirmation prompt", 8)
+        self.assertTrue(os.path.exists(self.stale_file), "must not delete before confirming")
+        self.key("y", "Enter")
+        self.wait_for(lambda: not os.path.exists(self.stale_file), "stale entry removed", 8)
+
+    def test_plain_text_sessions_command(self):
+        self.seed_sessions()
+        env = dict(os.environ, HOME=self.home, CLAUDE_HUB_CACHE_DIR=self.cache,
+                   CLAUDE_HUB_CONFIG=os.path.join(self.tmp, "config"))
+        r = subprocess.run([sys.executable, HUB, "sessions"], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Overnight build", r.stdout)
+        self.assertIn("Fix the login bug", r.stdout)
+        self.assertIn("sessions:", r.stdout.splitlines()[-1])
+
     # --- refresh --------------------------------------------------------
     def test_failed_background_refresh_keeps_cached_github_rows(self):
         self.start()

@@ -26,6 +26,8 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
   `initial-command` was dropped because it never fires in a long-running single instance. Opt out with CLAUDE_HUB_AUTOSTART=0.
 - Fixed after use: viewing a project no longer moves it up (PR counts come from the refresh); claude-hub now launches claude
   with the dashboard mod like the shell function does.
+- Done (after use): Sessions view (ctrl-s, `claude-hub sessions`): working, attached, detached, terminal,
+  orphaned, stale and past sessions, with attach, resume and confirmed clean-up.
 - Reviewed: independent code review (1 HIGH, 6 MEDIUM, 7 LOW) all addressed in `review-fixes`: failed refresh no longer
   wipes cached repos, clone cleanup can never delete a directory claude-hub did not create, locked cache writes,
   git runs with fsmonitor/hooks disabled, stats union clones and flag timeouts. 63 tests.
