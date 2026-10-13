@@ -7,3 +7,7 @@ decisions also get their own record under `adr/` (see [adr/README.md](../adr/REA
 - 2026-10-13: Vault is co-located in `docs/` (matches daily-hub; one clone, memory versioned with code).
 - 2026-10-13: Gamification counts active days from authored commits, local clones only.
 - 2026-10-13: Cache lives in `~/.cache/hub/`, not on the data drive.
+- 2026-10-13: Minimum Python 3.11; TOML config via `tomllib` (user-confirmed).
+- 2026-10-13: Cache may hold PR/issue titles and counts, in `~/.cache/hub/` (user-confirmed).
+- 2026-10-13: Streak breaks only after a full empty calendar day (user-confirmed).
+- 2026-10-13: Order is pinned, then needs-attention, then recency (user-confirmed).
