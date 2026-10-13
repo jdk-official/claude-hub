@@ -19,6 +19,7 @@ to orient at the start of a session, then hand off to the router.
 
 - [requirements-brainstorm.md](requirements-brainstorm.md) — prioritised requirements, selected scope, gamification, open questions.
 - [templates/](templates/) — spec, review and completion templates.
+- [reference/fzf-spike.md](reference/fzf-spike.md) — verified fzf mechanisms for iteration 2.
 
 ## Working lanes
 

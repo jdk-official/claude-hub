@@ -20,7 +20,8 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
 - Done (2026-10-13): iteration 1 built autonomously and merged to main: tool checks, cache (`~/.cache/hub`),
   TOML config, scan roots, needs-attention ordering and markers, preview (commits, HANDOVER/README excerpt,
   PRs/issues), launch (new / resume with ctrl-l, clone confirm), stats header, per-repo sparkline,
-  `hub stats` heatmap, responsive preview. 46 unit tests (`python3 -m unittest discover -s tests`).
+  `hub stats` heatmap, responsive preview, dashboard (heatmap) on the home row. Tests: `python3 -m unittest discover -s tests`
+  runs unit tests plus end-to-end tests that drive the real picker in tmux (needs tmux and fzf).
 - Reviewed: independent code review (1 HIGH, 6 MEDIUM, 7 LOW) all addressed in `review-fixes`: failed refresh no longer
   wipes cached repos, clone cleanup can never delete a directory hub did not create, locked cache writes,
   git runs with fsmonitor/hooks disabled, stats union clones and flag timeouts. 63 tests.
@@ -37,5 +38,5 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
 ## Open items
 
 1. Verify the picker in the real narrow Ghostty window, then start iteration 2.
-2. Q1 fzf spike, then Q3-Q6 from [BACKLOG.md](tracking/BACKLOG.md).
+2. Q3-Q6 from [BACKLOG.md](tracking/BACKLOG.md); the fzf spike is done, see [fzf-spike](reference/fzf-spike.md).
 3. Confirm the stats look right to the user (lines changed include vendored-tooling commits; line counts cover the last 14 days only, streaks and sparklines cover 400 days).

@@ -21,11 +21,11 @@ Requirement IDs refer to the [PRD](../prd/hub.md). Status: iteration 1 built and
 
 ## Next: iteration 2 (remaining fzf-driven UI)
 
-Starts with Q1, a spike on fzf 0.74.3 that settles PRD assumption row 11.
+Q1 (the fzf spike) is done; Q2 shipped in iteration 1. Remaining: Q3 to Q6.
 
 | ID | Item | Covers | Depends on |
 |---|---|---|---|
-| Q1 | Spike: verify --track, reload, become, --header-first, responsive preview | assumption row 11 | iteration 1 |
+| Q1 | DONE 2026-10-13: spike verified --track, reload, become, --header-first, --footer, --nth (11/11); see [fzf-spike](../reference/fzf-spike.md) | assumption row 11 | iteration 1 |
 | Q2 | Responsive preview position (narrow: below, wide: beside). DONE in iteration 1 via the fzf `<100(down,40%)` alternative layout | FR-21, FR-22, AC-6 | none |
 | Q3 | Stats header and key-hint footer | FR-35, AC-26 | Q1, P9 |
 | Q4 | Full-list scrolling and name+tags-only search | FR-10, FR-11, FR-34, AC-19, AC-25 | Q1 |
