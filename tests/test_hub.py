@@ -355,6 +355,13 @@ class Cli(Tmp):
         self.assertLess(time.time() - t, 2)
 
 
+class PreviewLayout(unittest.TestCase):
+    def test_threshold_is_in_preview_columns_not_terminal_columns(self):
+        # 45% of a 100-column terminal is 45, so the alternative layout kicks in below 100 columns
+        self.assertIn("right,45%", hub.PREVIEW_WINDOW)
+        self.assertIn("<45(down", hub.PREVIEW_WINDOW)
+
+
 class Preview(Tmp):
     def test_preview_wraps_and_has_commits_and_excerpt(self):  # FR-17/18/20
         d = os.path.join(self.tmp, "proj")

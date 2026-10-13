@@ -38,6 +38,9 @@ GH_TIMEOUT = 20
 PR_TTL = 15 * 60
 EXCERPT_LINES = 10
 MAX_ROWS = 100
+# fzf's <N threshold applies to the preview pane's own width (45% of the terminal), so <45 means a
+# terminal narrower than 100 columns: the preview then moves below the list (FR-21/FR-22).
+PREVIEW_WINDOW = "right,45%,wrap,<45(down,40%,wrap)"
 STATS_DAYS = 400
 STATS_TTL = 300
 STAT_DAYS = 14  # window for line counts; older commits count toward streaks and sparklines only
@@ -918,7 +921,7 @@ def main(argv):
         ["fzf", "--delimiter", "\t", "--with-nth", "2", "--height", "100%", "--layout", "reverse",
          "--prompt", "repo> ", "--header", header, "--expect", "ctrl-l",
          "--preview", f"{me} --preview {{3}} {{4}} {{5}}",
-         "--preview-window", "right,45%,wrap,<100(down,40%,wrap)"],
+         "--preview-window", PREVIEW_WINDOW],
         input="\n".join(lines), stdout=subprocess.PIPE, text=True)
     if res.returncode not in (0, 1, 130):
         sys.stderr.write(f"hub: fzf failed (exit {res.returncode})\n")
