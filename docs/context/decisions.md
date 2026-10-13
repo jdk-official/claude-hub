@@ -11,3 +11,5 @@ decisions also get their own record under `adr/` (see [adr/README.md](../adr/REA
 - 2026-10-13: Cache may hold PR/issue titles and counts, in `~/.cache/hub/` (user-confirmed).
 - 2026-10-13: Streak breaks only after a full empty calendar day (user-confirmed).
 - 2026-10-13: Order is pinned, then needs-attention, then recency (user-confirmed).
+- 2026-10-13: Weeks run Monday to Sunday; lines changed = insertions + deletions, merges excluded (user-confirmed).
+- 2026-10-13: Keys: ctrl-r refresh, ctrl-l resume, ctrl-t tag filter; ctrl-g stays fzf's abort alias (user-confirmed).

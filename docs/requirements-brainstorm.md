@@ -30,9 +30,9 @@ Ghostty window and start or resume a Claude session there, so that I never type 
 |----|-------------|------------------|
 | S1 | When a repo is highlighted, the preview shall show last 3 commits (subject + age) and the first ~10 lines of `HANDOVER.md`, else the repo README. | Highlight a repo with HANDOVER.md: its first lines show; one without shows README. |
 | S2 | When the preview pane renders, the system shall word-wrap description and paths to the pane width (never clip). | Resize to 50, 80, 120 columns: no line exceeds pane width, no text lost. |
-| S3 | When the user presses a resume key (proposed `ctrl-r`), the system shall exec `claude --continue`; plain Enter starts a new session. | `ctrl-r` in a repo with a prior session reopens it; Enter opens a blank one. |
+| S3 | When the user presses a resume key (`ctrl-l`, confirmed), the system shall exec `claude --continue`; plain Enter starts a new session. | `ctrl-l` in a repo with a prior session reopens it; Enter opens a blank one. |
 | S4 | When the user presses `ctrl-o`, the system shall open the repo's GitHub page in the browser (`gh browse`); `ctrl-s` shall open a plain `$SHELL` in the repo. | Each key does only its action; hub exits afterwards. |
-| S5 | When the user presses `ctrl-g` (refresh), the system shall re-run the GitHub fetch and local git scan and redraw. | Make a repo dirty in another terminal, press key, `*N` appears. |
+| S5 | When the user presses `ctrl-r` (refresh), the system shall re-run the GitHub fetch and local git scan and redraw. | Make a repo dirty in another terminal, press key, `*N` appears. |
 | S6 | The system shall read `~/.config/hub/config` for owners, extra source dirs, pinned and hidden repos, and count. | Add `hidden = foo`: `foo` no longer listed; pinned repo sorts first. |
 | S7 | Where several sources exist, the system shall label each row with its origin (github owner or dir) and de-duplicate by remote URL, not just by name. | Two repos named `x` from different owners both appear, distinguishable. |
 | S8 | If the cache is older than a threshold (default 24 h), the system shall mark it as stale in the header. | Age the cache file with `touch -d`: header shows "stale". |
@@ -64,7 +64,7 @@ Ghostty window and start or resume a Claude session there, so that I never type 
 ## 4. Open questions (recommended default in bold)
 
 1. Cache location and format? **`~/.cache/hub/repos.json` (home, not the data drive, per the secrets rule).**
-2. Does Enter start new or resume? **New session on Enter, `ctrl-r` resumes; revisit if you resume more than 70% of the time.**
+2. Does Enter start new or resume? **New session on Enter, `ctrl-l` resumes; revisit if you resume more than 70% of the time.**
 3. Which owners? **Only `jdk-official` for now; config key `owners = [...]` ready for more.** Do you want org repos or collaborator repos included?
 4. How many rows? **Keep 10 by default, but let fzf scroll and search the full cached list (up to 100) so a repo outside the top 10 is still reachable by typing.** Today `-n` hides everything past 10.
 5. Sort order? **Most recent activity (max of last commit and push), pinned first.** Should dirty working trees outrank age?

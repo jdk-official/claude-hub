@@ -44,13 +44,16 @@ Glossary: **scan root** = a directory whose immediate subdirectories hub lists a
 | D-6 | The cache may hold PR/issue counts and titles, not only counts (resolves row 19). | Confirmed by the user, 2026-10-13 |
 | D-7 | A streak survives until a full calendar day passes with no qualifying commit (resolves row 8). | Confirmed by the user, 2026-10-13 |
 | D-8 | Needs-attention repos (dirty, unpushed, open PR) outrank newer clean repos; pinned first (resolves row 13). | Confirmed by the user, 2026-10-13 |
+| D-9 | Weeks run Monday to Sunday; "this week" is week-to-date (resolves row 6). | Confirmed by the user, 2026-10-13 |
+| D-10 | Lines changed = insertions plus deletions from numstat, merge commits excluded (resolves row 7). | Confirmed by the user, 2026-10-13 |
+| D-11 | Keys: `ctrl-r` refresh, `ctrl-l` resume (`claude --continue`), `ctrl-t` tag filter; `ctrl-g` is left as fzf's abort alias; `ctrl-l` overrides fzf's clear-screen (fzf 0.74.3). | Confirmed by the user, 2026-10-13 |
 
 ## 4. Functional requirements
 
 Cache, refresh, degradation
 - **FR-1** When hub starts, the launcher shall render the picker from the cache in `~/.cache/hub/` without waiting for any GitHub call.
 - **FR-2** While the picker is open, the launcher shall refresh GitHub data and local git state in the background and update the list in place when results arrive.
-- **FR-3** When the user presses `ctrl-g`, the launcher shall re-run the GitHub fetch and the local scan and redraw the list.
+- **FR-3** When the user presses `ctrl-r`, the launcher shall re-run the GitHub fetch and the local scan and redraw the list.
 - **FR-4** If the cache is missing, corrupt, or unreadable, then the launcher shall ignore it and rebuild it without exiting.
 - **FR-5** If the cache is older than 24 hours, then the launcher shall mark it as stale in the header.
 - **FR-6** If `gh` is missing, unauthenticated, offline, or times out, then the launcher shall list local repos and state in one header line that GitHub is unavailable.
@@ -77,7 +80,7 @@ Preview
 
 Launch
 - **FR-23** When the user presses Enter on a locally present repo, the launcher shall change to the repo directory and exec `claude` as a new session.
-- **FR-24** When the user presses `ctrl-r` on a locally present repo, the launcher shall change to the repo directory and exec `claude --continue`.
+- **FR-24** When the user presses `ctrl-l` on a locally present repo, the launcher shall change to the repo directory and exec `claude --continue`.
 - **FR-25** When the user selects a GitHub-only repo, the launcher shall ask for y/N confirmation before cloning into `/mnt/data/github/<name>`.
 - **FR-26** If the user answers anything other than "y" or the clone fails, then the launcher shall abort leaving no partial directory.
 - **FR-27** If the user selects a GitHub-only repo while GitHub is unreachable, then the launcher shall refuse the clone with a clear message.
@@ -135,7 +138,7 @@ All numbers are targets to be measured, not measurements.
 - **AC-18** Where a repo is pinned in config, it shall sort above all unpinned repos.
 - **AC-19** While the query is non-empty, a repo ranked beyond the first 10 shall be selectable by typing part of its name.
 - **AC-20** If a repo is dirty and unpinned, then it shall be ranked above a clean unpinned repo with newer activity.
-- **AC-21** When `ctrl-r` is pressed on a repo with a prior session, hub shall exec `claude --continue` in that directory.
+- **AC-21** When `ctrl-l` is pressed on a repo with a prior session, hub shall exec `claude --continue` in that directory.
 - **AC-22** The hub source shall contain no invocation of `git push`, `reset`, `clean`, or a forced operation.
 - **AC-23** Given a scratch directory without `.git` under `/mnt/data/scratch`, when hub lists projects, then the directory is listed, aged by mtime, and launchable.
 - **AC-24** Given one repo with a HANDOVER.md and one with only a README, when each is highlighted, then the preview shows the HANDOVER.md lines for the first and the README lines for the second.
@@ -153,8 +156,8 @@ All numbers are targets to be measured, not measurements.
 | 7 | Which commits and what "lines changed" means. | `git log --all` per repo, deduplicated by hash within a repo, merges excluded; lines changed = insertions plus deletions from numstat. | Counts differ from `git log --author` checks in AC-12. |
 | 8 | Whether today without a commit breaks the current streak. | Streak stays alive until the day ends; it resets only after a full day without a qualifying commit (AC-11). | Header shows 0 each morning if the opposite is wanted. |
 | 9 | Owners and collaborator/org repos (open question 3). | Only `jdk-official`; config key `owners` reserved for more. | Org or collaborator repos are missing from the list. |
-| 10 | Enter vs resume (open question 2); `ctrl-r` key is a proposal; `claude --continue` behaviour per directory is unverified. | Enter starts new, `ctrl-r` resumes; revisit if resume exceeds 70% of launches. | Wrong default costs a keystroke per launch; key may clash with fzf bindings. |
-| 11 | Feasibility, unverified: whether fzf (installed version unknown) supports showing 10 rows until typed while searching all 100, in-place list updates from a background refresh (reload/listen), and `change-preview-window` toggling, from a stdlib Python wrapper. | Assume feasible with `--bind` reload/change actions and `--listen`; fallback is a full list shown scrollable and a restart-free reload only on `ctrl-g`. Cost of the mechanism is unstated. | FR-2, FR-10, FR-11, FR-21/22 may need rework or a weaker behaviour; startup NFRs may be missed. |
+| 10 | Enter vs resume (open question 2); `ctrl-l` key confirmed by the user (fzf binds it to clear-screen by default; hub overrides it); `claude --continue` behaviour per directory is unverified. | Enter starts new, `ctrl-l` resumes; revisit if resume exceeds 70% of launches. | Wrong default costs a keystroke per launch; key may clash with fzf bindings. |
+| 11 | Feasibility, unverified: whether fzf (installed version unknown) supports showing 10 rows until typed while searching all 100, in-place list updates from a background refresh (reload/listen), and `change-preview-window` toggling, from a stdlib Python wrapper. | Assume feasible with `--bind` reload/change actions and `--listen`; fallback is a full list shown scrollable and a restart-free reload only on `ctrl-r`. Cost of the mechanism is unstated. | FR-2, FR-10, FR-11, FR-21/22 may need rework or a weaker behaviour; startup NFRs may be missed. |
 | 12 | Config format and the minimum Python version. TOML via stdlib `tomllib` requires 3.11, conflicting with the brainstorm's 3.8 floor. | `~/.config/hub/config` is TOML; minimum Python 3.11 (C-8); keys: owners, scan_roots, pinned, hidden, tags, count. | If 3.8 support is required, switch to `configparser` and restate FR-8/C-8. |
 | 13 | Needs-attention definition and data. PR counts exist only after a lazy fetch (FR-19). | Tiers: pinned, then needs-attention (dirty, ahead of upstream, or cached open PR), then recency; a repo with no cached PR data is not boosted by PRs. | Attention ordering under-reports PR-only repos until first highlighted. |
 | 14 | Tag syntax and filter key (T1). | Tags are a per-repo list in config; filter key `ctrl-t` opens a tag chooser; untagged repos have no tag. | Key or shape must change; group semantics (nested groups) unsupported. |
@@ -163,9 +166,9 @@ All numbers are targets to be measured, not measurements.
 | 17 | Layout between 61 and 99 columns; exact column count of the ~384 px window is unverified; floating window (open question 7) deferred. | Preview below the list for 61-99 columns; tiled narrow window remains the target; verify with `tput cols`. | NFR-5 margins and FR-21 threshold may need tuning. |
 | 18 | Clone confirmation (open question 9). | Keep the y/N prompt for every clone, including private repos. | Extra keystroke if silent cloning is wanted. |
 | 19 | Cache shape and privacy (open question 1). The brainstorm says the cache holds names, descriptions, visibility, timestamps only, but PR/issue titles (C1) and stats aggregates are also cached. | `~/.cache/hub/repos.json` plus stats within it; PR/issue titles and aggregates treated as repo metadata, permitted under C-4; README/HANDOVER excerpts never cached. | Private PR titles sitting in `~` cache may be unacceptable; restrict to counts only. |
-| 20 | S2 (wrap), S5 (`ctrl-g`), S7 (origin label, de-dup) are not in the 4b selection but are needed by selected features. | Included as FR-20, FR-3, FR-12. | Scope creep; remove FRs if unwanted. |
+| 20 | S2 (wrap), S5 (`ctrl-r`), S7 (origin label, de-dup) are not in the 4b selection but are needed by selected features. | Included as FR-20, FR-3, FR-12. | Scope creep; remove FRs if unwanted. |
 | 21 | v0 behaviours not mentioned in the brainstorm: `~` home row, `-n COUNT`, `--list`, hiding archived repos. | Retained unchanged. | Behaviour regressions or leftover clutter. |
-| 22 | Refresh cadence and stale threshold (open question 6, S8). | Refresh on every launch plus `ctrl-g`; no timer; stale after 24 h. | Cache can be stale between launches; revisit pre-warm (C6). |
+| 22 | Refresh cadence and stale threshold (open question 6, S8). | Refresh on every launch plus `ctrl-r`; no timer; stale after 24 h. | Cache can be stale between launches; revisit pre-warm (C6). |
 | 23 | Timeout and speed numbers are brainstorm targets, not measurements; 3 s per-repo timeout is a proposal. | Adopt as NFR targets; measure before sign-off. | Targets may be unattainable on cold cache with many repos. |
 | 24 | Per-repo `claude_args` and extra flags (open question 12). | No flags; not implemented. | User must pass flags manually inside claude. |
 | 25 | Sparkline and heatmap glyph rendering in the user's Ghostty font. | Use Unicode block characters (▁-█); no ASCII fallback. | Misrendered cells; add ASCII fallback. |
