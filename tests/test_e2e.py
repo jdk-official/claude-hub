@@ -24,6 +24,8 @@ case "$1 $2" in
     echo "no network" >&2; exit 1 ;;
   "repo clone") mkdir -p "$4"; echo partial > "$4/partial.txt"; exit 1 ;;
   "api rate_limit") [ -n "$HUB_E2E_OFFLINE" ] && exit 1; exit 0 ;;
+  "pr list") echo '[{"title":"an open PR"}]'; exit 0 ;;
+  "issue list") echo '[]'; exit 0 ;;
   *) exit 1 ;;
 esac
 """
@@ -128,6 +130,16 @@ class E2E(unittest.TestCase):
         call = self.claude_call()
         self.assertEqual(os.path.realpath(call["cwd"]), os.path.realpath(os.path.join(self.root, "alpha")))
         self.assertEqual(call["args"], "")
+
+    def test_launch_adds_the_dashboard_mod_like_the_shell_function(self):
+        mod = os.path.join(self.home, ".claude", "mods", "project-dashboard")
+        os.makedirs(mod)
+        self.start()
+        self.ready()
+        self.type("alpha")
+        self.wait_for(lambda: "alpha readme line" in self.screen(), "alpha preview")
+        self.key("C-l")
+        self.assertEqual(self.claude_call()["args"], f"--plugin-dir {mod} --continue")
 
     def test_ctrl_l_resumes(self):
         self.start()
@@ -314,6 +326,20 @@ class E2E(unittest.TestCase):
 
     def session_dirs(self):
         return [d for d in os.listdir(self.run_dir) if d.startswith("hub-")]
+
+    def test_viewing_projects_does_not_reorder_the_list(self):
+        self.gh_repos_file("remote-only", "another")
+        self.start()
+        self.ready()
+        self.wait_for(lambda: "another" in self.screen(), "refresh with both repos", 10)
+        time.sleep(0.5)
+        order = [r for r in self.list_rows() if r in ("alpha", "beta", "remote-only", "another", "~")]
+        for _ in range(len(order)):          # highlight every project, which triggers the lazy PR fetch
+            self.key("Down")
+            time.sleep(0.4)
+        time.sleep(1.5)                      # let any (unwanted) reload settle
+        after = [r for r in self.list_rows() if r in ("alpha", "beta", "remote-only", "another", "~")]
+        self.assertEqual(after, order, "viewing projects must not change their order")
 
     def test_session_socket_exists_during_session_and_is_cleaned_up(self):
         self.start()
