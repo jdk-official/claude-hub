@@ -1,6 +1,6 @@
 # hub: product requirements
 
-Status: authored from `docs/requirements-brainstorm.md` (primary), `bin/hub` (v0, ~165 lines), `README.md`, `docs/HANDOVER.md`, `docs/context/*.md`. Nothing here is implemented or tested. All timings are targets, not measurements.
+Status: authored from `requirements-brainstorm.md` (primary), `bin/hub` (v0, ~165 lines), the repo README, `HANDOVER.md`, `context/*.md`. Nothing here is implemented or tested. All timings are targets, not measurements.
 
 Glossary: **scan root** = a directory whose immediate subdirectories hub lists as projects. **Active day** = a calendar day with at least one qualifying commit. **Qualifying commit** = a commit that passes the counting rules in section 8 (rows 1-8).
 
@@ -36,10 +36,10 @@ Glossary: **scan root** = a directory whose immediate subdirectories hub lists a
 
 | # | Decision | Source |
 |---|----------|--------|
-| D-1 | Python stdlib + fzf stays; a rewrite only if startup is slow after caching. | `docs/context/decisions.md`, 2026-10-13 entry 1; also stated by the user in session |
-| D-2 | The cache lives in `~/.cache/hub/`, not on the data drive. | `docs/context/decisions.md`, 2026-10-13 entry 4; also stated by the user in session |
-| D-3 | Gamification counts active days from authored commits, local clones only. | `docs/context/decisions.md`, 2026-10-13 entry 3 |
-| D-4 | The selected scope in section 2 (features and G1/G2/G3/G8) was chosen by the user. | `docs/requirements-brainstorm.md` section 4b, "chosen by the user, 2026-10-13" |
+| D-1 | Python stdlib + fzf stays; a rewrite only if startup is slow after caching. | `context/decisions.md`, 2026-10-13 entry 1; also stated by the user in session |
+| D-2 | The cache lives in `~/.cache/hub/`, not on the data drive. | `context/decisions.md`, 2026-10-13 entry 4; also stated by the user in session |
+| D-3 | Gamification counts active days from authored commits, local clones only. | `context/decisions.md`, 2026-10-13 entry 3 |
+| D-4 | The selected scope in section 2 (features and G1/G2/G3/G8) was chosen by the user. | `requirements-brainstorm.md` section 4b, "chosen by the user, 2026-10-13" |
 | D-5 | Minimum Python 3.11; config is TOML via stdlib `tomllib` (resolves assumption row 12). | Confirmed by the user, 2026-10-13 |
 | D-6 | The cache may hold PR/issue counts and titles, not only counts (resolves row 19). | Confirmed by the user, 2026-10-13 |
 | D-7 | A streak survives until a full calendar day passes with no qualifying commit (resolves row 8). | Confirmed by the user, 2026-10-13 |
@@ -147,7 +147,7 @@ All numbers are targets to be measured, not measurements.
 | 1 | Author identities for counting (brainstorm: "to confirm"). Exact GitHub noreply form unknown. | Match author email `jonathan@kyte.me.uk` or any `*@users.noreply.github.com` address containing `jdk-official`. | Streak and averages undercount or include foreign commits; adjust identity list. |
 | 2 | How bots are detected. | Exclude authors whose name or email contains `[bot]`. | Bot commits inflate stats, or a legitimate author is dropped. |
 | 3 | Commits with a `Co-Authored-By: Claude` trailer (brainstorm: counts, "to confirm"). | They count; a commit matching the identity or carrying the trailer is qualifying. | Streaks shrink if the user later wants only hand-written commits. |
-| 4 | Counting rules are marked "to confirm" in the brainstorm, while `decisions.md` records active days and local-only as decided (D-3). | Treat D-3 as decided; G2 displays raw commit counts, while streaks and averages use active days (FR-33). | If raw commits should drive the average, FR-29/FR-33 change. |
+| 4 | Counting rules are marked "to confirm" in the brainstorm, while `context/decisions.md` records active days and local-only as decided (D-3). | Treat D-3 as decided; G2 displays raw commit counts, while streaks and averages use active days (FR-33). | If raw commits should drive the average, FR-29/FR-33 change. |
 | 5 | Which clones are in stats. | All git repos under all scan roots (including those with no GitHub remote); GitHub-only repos excluded. | Stats omit work in repos outside scan roots. |
 | 6 | Time basis for days and weeks. | Author date in local timezone; week runs Monday-Sunday; "this week" is week-to-date; 4-week average is the mean of the 4 preceding complete weeks. | Day/week boundaries shift; ACs 10-15 need restating. |
 | 7 | Which commits and what "lines changed" means. | `git log --all` per repo, deduplicated by hash within a repo, merges excluded; lines changed = insertions plus deletions from numstat. | Counts differ from `git log --author` checks in AC-12. |
@@ -158,7 +158,7 @@ All numbers are targets to be measured, not measurements.
 | 12 | Config format and the minimum Python version. TOML via stdlib `tomllib` requires 3.11, conflicting with the brainstorm's 3.8 floor. | `~/.config/hub/config` is TOML; minimum Python 3.11 (C-8); keys: owners, scan_roots, pinned, hidden, tags, count. | If 3.8 support is required, switch to `configparser` and restate FR-8/C-8. |
 | 13 | Needs-attention definition and data. PR counts exist only after a lazy fetch (FR-19). | Tiers: pinned, then needs-attention (dirty, ahead of upstream, or cached open PR), then recency; a repo with no cached PR data is not boosted by PRs. | Attention ordering under-reports PR-only repos until first highlighted. |
 | 14 | Tag syntax and filter key (T1). | Tags are a per-repo list in config; filter key `ctrl-t` opens a tag chooser; untagged repos have no tag. | Key or shape must change; group semantics (nested groups) unsupported. |
-| 15 | HANDOVER location and excerpt length (S1 says "first ~10 lines"). | Look for `HANDOVER.md` at repo root, then `docs/HANDOVER.md`, else `README.md`; 10 lines. | Repos such as this one (docs/HANDOVER.md) show the wrong excerpt. |
+| 15 | HANDOVER location and excerpt length (S1 says "first ~10 lines"). | Look for `HANDOVER.md` at repo root, then the `docs/` folder, else the repo README; 10 lines. | Repos such as this one (docs/HANDOVER.md) show the wrong excerpt. |
 | 16 | How extra scan roots are enumerated (C2). | Each immediate subdirectory is a project; non-git directories aged by mtime; clones still go only to `/mnt/data/github`. | Noise from non-project folders in `/mnt/data/files`; hide via config. |
 | 17 | Layout between 61 and 99 columns; exact column count of the ~384 px window is unverified; floating window (open question 7) deferred. | Preview below the list for 61-99 columns; tiled narrow window remains the target; verify with `tput cols`. | NFR-5 margins and FR-21 threshold may need tuning. |
 | 18 | Clone confirmation (open question 9). | Keep the y/N prompt for every clone, including private repos. | Extra keystroke if silent cloning is wanted. |
@@ -178,7 +178,7 @@ All numbers are targets to be measured, not measurements.
   "report": {
     "agent": "requirements-author",
     "as_of_date": "2026-10-13",
-    "scope": "hub personal terminal launcher PRD from docs/requirements-brainstorm.md, bin/hub, README.md, docs/HANDOVER.md, docs/context/*.md",
+    "scope": "hub personal terminal launcher PRD from requirements-brainstorm.md, bin/hub, the repo README, HANDOVER.md, context/*.md",
     "summary": "33 FRs, 7 NFRs, 8 constraints, 24 ACs, 25 assumption rows. One weak grade: feasible, evidenced by section-8 row 11 (fzf mechanisms unverified); row 12 also flags a Python-version conflict. No fail grades.",
     "verdict": "DONE-WITH-CONDITIONS",
     "sensitivity": "sensitive"
