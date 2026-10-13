@@ -42,7 +42,7 @@ tmux pane. Result: 11 of 11 checks pass. This settles assumption row 11 of the P
 
 ## Reliability of the spike script
 
-`tests/spikes/fzf_spike.py` drives real fzf in tmux and reads the screen. On an idle machine it passes 13/13
+The spike script (tests/spikes/fzf_spike.py in the repo) drives real fzf in tmux and reads the screen. On an idle machine it passes 13/13
 repeatedly. On a heavily loaded machine (several test suites and Claude sessions at once) one or two checks
 occasionally fail because the screen is read before fzf has finished drawing or filtering, and the failing check
 changes from run to run. It waits for the list, for typed text to appear, and for result counts, and retries
