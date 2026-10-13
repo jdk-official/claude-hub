@@ -14,6 +14,7 @@ import sys
 if sys.version_info < (3, 11):
     sys.exit("hub: Python 3.11 or newer is required (found %d.%d)" % sys.version_info[:2])
 
+import fcntl
 import json
 import os
 import re
@@ -39,8 +40,8 @@ EXCERPT_LINES = 10
 MAX_ROWS = 100
 STATS_DAYS = 400
 STATS_TTL = 300
+STAT_DAYS = 14  # window for line counts; older commits count toward streaks and sparklines only
 IDENTITY_EMAILS = {"jonathan@kyte.me.uk"}
-NOREPLY_MARK = "jdk-official"
 BLOCKS = "▁▂▃▄▅▆▇█"
 HEAT = "░▒▓█"
 
@@ -52,6 +53,13 @@ DEFAULT_CONFIG = {
     "tags": {},
     "count": 10,
 }
+
+# Never let a repo's own config run code: the scan walks untrusted scratch dirs.
+GIT_BASE = ["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
+            "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat"]
+NOREPLY_RE = re.compile(r"^(\d+\+)?jdk-official@users\.noreply\.github\.com$", re.I)
+CLAUDE_TRAILER_RE = re.compile(r"\bclaude\b|@anthropic\.com", re.I)
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 INSTALL_HINT = {
     "fzf": "sudo pacman -S fzf",
@@ -74,7 +82,7 @@ def run(args, cwd=None, timeout=GIT_TIMEOUT):
 
 
 def git(args, cwd):
-    rc, out, _ = run(["git", "--no-optional-locks"] + args, cwd=cwd, timeout=GIT_TIMEOUT)
+    rc, out, _ = run(GIT_BASE + args, cwd=cwd, timeout=GIT_TIMEOUT)
     return out if rc == 0 else ""
 
 
@@ -96,10 +104,10 @@ def short_age(secs):
     if secs < 90:
         return "just now"
     if secs < 5400:
-        return f"{int(secs // 60)}m"
+        return f"{int(secs // 60)}m ago"
     if secs < 172800:
-        return f"{int(secs // 3600)}h"
-    return f"{int(secs // 86400)}d"
+        return f"{int(secs // 3600)}h ago"
+    return f"{int(secs // 86400)}d ago"
 
 
 # --- P1: tool checks --------------------------------------------------------
@@ -159,31 +167,78 @@ def cache_file():
     return os.path.join(CACHE_DIR, "repos.json")
 
 
+def _valid_date(s):
+    try:
+        date.fromisoformat(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def sanitize_cache(data):
+    """Drop any section whose shape is wrong; a bad cache must never be fatal (FR-4)."""
+    clean = {"version": 1}
+    gh = data.get("gh")
+    if isinstance(gh, dict) and isinstance(gh.get("repos", []), list):
+        repos = [r for r in gh.get("repos", []) if isinstance(r, dict)
+                 and isinstance(r.get("name"), str) and isinstance(r.get("owner"), str)]
+        clean["gh"] = {"fetched_at": gh.get("fetched_at") if isinstance(gh.get("fetched_at"), (int, float)) else 0,
+                       "last_attempt": gh.get("last_attempt") if isinstance(gh.get("last_attempt"), (int, float)) else 0,
+                       "ok": bool(gh.get("ok")), "error": str(gh.get("error", "")), "repos": repos}
+    prs = data.get("prs")
+    if isinstance(prs, dict):
+        clean["prs"] = {k: v for k, v in prs.items() if isinstance(v, dict)}
+    st = data.get("stats")
+    if isinstance(st, dict) and isinstance(st.get("days"), dict) and isinstance(st.get("repo_weeks", {}), dict):
+        days = {d: v for d, v in st["days"].items()
+                if _valid_date(d) and isinstance(v, dict) and isinstance(v.get("c"), int)}
+        for v in days.values():
+            v.setdefault("ins", 0), v.setdefault("del", 0), v.setdefault("repos", [])
+        clean["stats"] = {"computed_at": st.get("computed_at", 0), "days": days,
+                          "repo_weeks": {k: v for k, v in st.get("repo_weeks", {}).items() if isinstance(v, dict)},
+                          "partial": int(st.get("partial", 0)) if isinstance(st.get("partial", 0), int) else 0}
+    return clean
+
+
 def load_cache():
     """Return the cache dict, or {} if missing, unreadable or corrupt (never fatal)."""
     try:
         with open(cache_file()) as f:
             data = json.load(f)
         if isinstance(data, dict) and data.get("version") == 1:
-            return data
+            return sanitize_cache(data)
     except (OSError, ValueError):
         pass
     return {}
 
 
-def save_cache_section(**sections):
-    """Merge sections into the on-disk cache atomically (re-reads to avoid clobbering)."""
-    cache = load_cache() or {"version": 1}
-    cache["version"] = 1
-    cache.update(sections)
+def update_cache(fn):
+    """Locked read-modify-write: fn(cache) mutates the latest on-disk cache, then it is replaced atomically."""
+    tmp = None
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
-        tmp = cache_file() + f".{os.getpid()}.tmp"
-        with open(tmp, "w") as f:
-            json.dump(cache, f)
-        os.replace(tmp, cache_file())
-    except OSError:
+        with open(os.path.join(CACHE_DIR, "cache.lock"), "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            cache = load_cache() or {"version": 1}
+            fn(cache)
+            cache["version"] = 1
+            tmp = cache_file() + f".{os.getpid()}.tmp"
+            with open(tmp, "w") as f:
+                json.dump(cache, f)
+            os.replace(tmp, cache_file())
+            tmp = None
+    except (OSError, TypeError, ValueError):
         pass
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def save_cache_section(**sections):
+    update_cache(lambda c: c.update(sections))
 
 
 def gh_status_line(cache, gh_present, now=None):
@@ -193,36 +248,44 @@ def gh_status_line(cache, gh_present, now=None):
         return "GitHub: gh not installed, local only"
     if not gh:
         return "GitHub: loading (local only until the first refresh finishes)"
-    ago = now - gh.get("fetched_at", 0)
+    ago = short_age(now - gh.get("fetched_at", 0))
     if not gh.get("ok", False):
         if gh.get("repos"):
-            return f"GitHub unavailable (cached {short_age(ago)} ago)"
+            return f"GitHub unavailable (cached {ago})"
         return "GitHub unavailable, local only"
     n = len(gh.get("repos", []))
-    if ago > STALE_SECS:
-        return f"GitHub: {n} repos, cache STALE ({short_age(ago)} old)"
-    return f"GitHub: {n} repos, cached {short_age(ago)} ago"
+    if now - gh.get("fetched_at", 0) > STALE_SECS:
+        return f"GitHub: {n} repos, cache STALE ({ago})"
+    return f"GitHub: {n} repos, cached {ago}"
 
 
 # --- GitHub fetch -----------------------------------------------------------
 
-def fetch_github(owners):
-    repos, errors = [], []
+def fetch_github(owners, prev=None):
+    """List repos per owner. A failed owner keeps its previously cached repos (never wiped)."""
+    prev = prev or {}
+    prev_by_owner = {}
+    for r in prev.get("repos", []):
+        prev_by_owner.setdefault(r.get("owner"), []).append(r)
+    repos, errors, now = [], [], time.time()
     for owner in owners:
         rc, out, err = run(
             ["gh", "repo", "list", owner, "--limit", str(MAX_ROWS), "--json",
              "name,description,pushedAt,visibility,isArchived"], timeout=GH_TIMEOUT)
-        if rc != 0:
+        got = None
+        if rc == 0:
+            try:
+                got = [dict(r, owner=owner) for r in json.loads(out)]
+            except (ValueError, TypeError):
+                got = None
+        if got is None:
             errors.append(err.splitlines()[0] if err else "gh failed")
-            continue
-        try:
-            for r in json.loads(out):
-                r["owner"] = owner
-                repos.append(r)
-        except ValueError:
-            errors.append("bad gh output")
-    return {"fetched_at": time.time(), "ok": not errors or bool(repos),
-            "error": errors[0] if errors else "", "repos": repos}
+            repos.extend(prev_by_owner.get(owner, []))
+        else:
+            repos.extend(got)
+    ok = not errors
+    return {"fetched_at": now if ok else prev.get("fetched_at", 0), "last_attempt": now,
+            "ok": ok, "error": errors[0] if errors else "", "repos": repos}
 
 
 def refresh_lock():
@@ -234,7 +297,7 @@ def spawn_refresh():
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
         lock = refresh_lock()
-        if os.path.exists(lock) and time.time() - os.path.getmtime(lock) < 60:
+        if os.path.exists(lock) and time.time() - os.path.getmtime(lock) < 180:
             return
         open(lock, "w").close()
         subprocess.Popen([sys.executable, os.path.realpath(__file__), "--refresh"],
@@ -247,7 +310,7 @@ def spawn_refresh():
 def do_refresh(cfg):
     try:
         if shutil.which("gh"):
-            save_cache_section(gh=fetch_github(cfg["owners"]))
+            save_cache_section(gh=fetch_github(cfg["owners"], load_cache().get("gh")))
         refresh_extra(cfg)
     finally:
         try:
@@ -278,12 +341,13 @@ def inspect_dir(root, path):
     base = {"name": name, "path": path, "root": root, "is_git": False, "ts": 0,
             "branch": "", "dirty": 0, "ahead": 0, "behind": 0, "has_upstream": False,
             "remote": "", "slug": ""}
-    if os.path.isdir(os.path.join(path, ".git")):
+    if os.path.exists(os.path.join(path, ".git")):
         base["is_git"] = True
         ts = git(["log", "-1", "--format=%ct"], path)
         base["ts"] = int(ts) if ts.isdigit() else 0
         base["branch"] = git(["rev-parse", "--abbrev-ref", "HEAD"], path)
-        base["dirty"] = len(git(["status", "--porcelain"], path).splitlines())
+        rc, st, _ = run(GIT_BASE + ["status", "--porcelain"], cwd=path, timeout=GIT_TIMEOUT)
+        base["dirty"] = len(st.splitlines()) if rc == 0 else -1  # -1: unknown (timeout or error)
         base["remote"] = git(["remote", "get-url", "origin"], path)
         base["slug"] = slug_from_remote(base["remote"])
         ab = git(["rev-list", "--left-right", "--count", "@{u}...HEAD"], path)
@@ -307,7 +371,7 @@ def scan_local(roots):
         try:
             with os.scandir(root) as it:
                 for d in sorted(it, key=lambda e: e.name):
-                    if d.is_dir() and not d.name.startswith("."):
+                    if d.is_dir() and not d.name.startswith(".") and not CONTROL_RE.search(d.name):
                         dirs.append((root, d.path))
         except OSError:
             continue
@@ -403,7 +467,7 @@ def state_text(e):
     if not l["is_git"]:
         return "folder"
     s = l["branch"] or "?"
-    s += f" *{l['dirty']}" if l["dirty"] else " clean"
+    s += " ?" if l["dirty"] < 0 else (f" *{l['dirty']}" if l["dirty"] else " clean")
     if l["behind"]:
         s += f" ↓{l['behind']}"
     if not l["remote"]:
@@ -414,7 +478,7 @@ def state_text(e):
 def row_cells(e, cfg, prs=None):
     g = e["gh"] or {}
     return [e["name"], markers(e, cfg, prs), e["origin"], (g.get("visibility") or "").lower(),
-            age(e["ts"]), state_text(e), g.get("description") or ""]
+            age(e["ts"]), state_text(e), CONTROL_RE.sub(" ", g.get("description") or "")]
 
 
 # --- P6/P7: preview ---------------------------------------------------------
@@ -443,7 +507,7 @@ def excerpt(path, n=EXCERPT_LINES):
 
 
 def fetch_prs(slug):
-    """Open PR and issue counts + top-3 titles via gh; cached for PR_TTL."""
+    """Open PR and issue counts + top-3 titles via gh; cached for PR_TTL (failures too)."""
     cache = load_cache()
     cur = (cache.get("prs") or {}).get(slug)
     if cur and time.time() - cur.get("fetched_at", 0) < PR_TTL:
@@ -454,17 +518,18 @@ def fetch_prs(slug):
     for kind in ("pr", "issue"):
         rc, txt, _ = run(["gh", kind, "list", "-R", slug, "--state", "open", "--limit", "100",
                           "--json", "title"], timeout=8)
-        if rc != 0:
-            return cur
-        try:
-            items = json.loads(txt)
-        except ValueError:
-            return cur
+        items = None
+        if rc == 0:
+            try:
+                items = json.loads(txt)
+            except ValueError:
+                items = None
+        if not isinstance(items, list):
+            out[f"{kind}_error"] = True  # e.g. issues disabled: other kind still counts
+            continue
         out[f"{kind}_count"] = len(items)
-        out[f"{kind}_titles"] = [i.get("title", "") for i in items[:3]]
-    prs = dict(cache.get("prs") or {})
-    prs[slug] = out
-    save_cache_section(prs=prs)
+        out[f"{kind}_titles"] = [str(i.get("title", "")) for i in items[:3] if isinstance(i, dict)]
+    update_cache(lambda c: c.setdefault("prs", {}).__setitem__(slug, out))
     return out
 
 
@@ -498,7 +563,9 @@ def preview_text(path, slug, name, width=60):
         p = fetch_prs(slug)
         if p:
             out.append("")
-            out.append(f"PRs {p.get('pr_count', 0)} · issues {p.get('issue_count', 0)}")
+            prs_txt = "n/a" if p.get("pr_error") else str(p.get("pr_count", 0))
+            iss_txt = "n/a" if p.get("issue_error") else str(p.get("issue_count", 0))
+            out.append(f"PRs {prs_txt} · issues {iss_txt}")
             out.extend(wrap("  PR: " + t, width) for t in p.get("pr_titles", []))
             out.extend(wrap("  issue: " + t, width) for t in p.get("issue_titles", []))
     if path:
@@ -528,9 +595,9 @@ def qualifies(name, email, trailers):
     if is_bot(name, email):
         return False
     e = email.lower()
-    if e in IDENTITY_EMAILS or (e.endswith("@users.noreply.github.com") and NOREPLY_MARK in e):
+    if e in IDENTITY_EMAILS or NOREPLY_RE.match(e):
         return True
-    return "claude" in trailers.lower()
+    return bool(CLAUDE_TRAILER_RE.search(trailers))
 
 
 STAT_RE = re.compile(r"(\d+) insertion|(\d+) deletion")
@@ -542,9 +609,9 @@ def parse_log(text):
     for line in text.splitlines():
         if line.startswith("@@"):
             parts = line[2:].split("\x1f")
-            if len(parts) >= 5:
+            if len(parts) >= 4:  # run() strips output, which eats a trailing empty trailers field
                 cur = {"hash": parts[0], "email": parts[1], "name": parts[2], "date": parts[3],
-                       "trailers": parts[4], "ins": 0, "del": 0}
+                       "trailers": parts[4] if len(parts) > 4 else "", "ins": 0, "del": 0}
                 commits.append(cur)
         elif cur is not None and "changed" in line:
             for m in STAT_RE.finditer(line):
@@ -555,19 +622,32 @@ def parse_log(text):
     return commits
 
 
+LOG_FORMAT = "@@%H%x1f%ae%x1f%an%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x2c)"
+
+
+def _log(path, days, shortstat, timeout):
+    args = GIT_BASE + ["log", "--all", "--no-merges", f"--since={days}.days.ago",
+                       "--date=format-local:%Y-%m-%d", "--format=" + LOG_FORMAT]
+    if shortstat:
+        args.insert(len(GIT_BASE) + 1, "--shortstat")
+    rc, out, _ = run(args, cwd=path, timeout=timeout)
+    return parse_log(out) if rc == 0 else None
+
+
 def repo_commits(path, days=STATS_DAYS):
-    rc, out, _ = run(
-        ["git", "--no-optional-locks", "log", "--all", "--no-merges", f"--since={days}.days.ago",
-         "--shortstat", "--date=format-local:%Y-%m-%d",
-         "--format=@@%H%x1f%ae%x1f%an%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x2c)"],
-        cwd=path, timeout=30)
-    if rc != 0:
-        return []
+    """Qualifying commits for the window. Dates come from a cheap log over the whole window; line
+    counts (--shortstat is slow on big histories) only for the recent STAT_DAYS used by today/week."""
+    base = _log(path, days, False, 30)
+    if base is None:
+        return None  # unknown: timed out or failed; caller flags the stats as partial
+    recent = _log(path, STAT_DAYS, True, 30)
+    stats = {c["hash"]: (c["ins"], c["del"]) for c in (recent or [])}
     seen, res = set(), []
-    for c in parse_log(out):
+    for c in base:
         if c["hash"] in seen or not qualifies(c["name"], c["email"], c["trailers"]):
             continue
         seen.add(c["hash"])
+        c["ins"], c["del"] = stats.get(c["hash"], (0, 0))
         res.append(c)
     return res
 
@@ -576,7 +656,7 @@ def monday(d):
     return d - timedelta(days=d.weekday())
 
 
-def aggregate(per_repo, today):
+def aggregate(per_repo):
     """per_repo: {path: (name, commits)} -> cached stats structure."""
     days, repo_weeks = {}, {}
     for path, (name, commits) in per_repo.items():
@@ -595,23 +675,37 @@ def aggregate(per_repo, today):
             wk = monday(d).isoformat()
             rw[wk] = rw.get(wk, 0) + 1
         repo_weeks[path] = rw
-    return {"computed_at": time.time(), "days": days, "repo_weeks": repo_weeks}
+    return {"computed_at": time.time(), "days": days, "repo_weeks": repo_weeks, "partial": 0}
 
 
-def compute_stats(local, today=None):
-    seen, per_repo = set(), {}
-    git_dirs = [l for l in local if l["is_git"]]
-    for l in sorted(git_dirs, key=lambda x: x["path"]):
-        key = l["slug"].lower() if l["slug"] else "path:" + l["path"]
-        if key in seen:
-            continue
-        seen.add(key)
-        per_repo[l["path"]] = (l["name"], None)
+def compute_stats(local):
+    """Group clones by remote; the picker's choice (most recent clone) names the repo, and commits
+    from all clones of one remote are unioned by hash so unpushed work in any clone counts."""
+    groups = {}
+    for l in local:
+        if l["is_git"]:
+            key = l["slug"].lower() if l["slug"] else "path:" + l["path"]
+            groups.setdefault(key, []).append(l)
+    paths = [l["path"] for g in groups.values() for l in g]
     with ThreadPoolExecutor(8) as ex:
-        paths = list(per_repo)
-        for p, commits in zip(paths, ex.map(repo_commits, paths)):
-            per_repo[p] = (per_repo[p][0], commits)
-    return aggregate(per_repo, today or date.today())
+        results = dict(zip(paths, ex.map(repo_commits, paths)))
+    per_repo, partial = {}, 0
+    for g in groups.values():
+        chosen = max(g, key=lambda l: l["ts"])
+        merged, seen = [], set()
+        for l in g:
+            commits = results.get(l["path"])
+            if commits is None:
+                partial += 1
+                continue
+            for c in commits:
+                if c["hash"] not in seen:
+                    seen.add(c["hash"])
+                    merged.append(c)
+        per_repo[chosen["path"]] = (chosen["name"], merged)
+    st = aggregate(per_repo)
+    st["partial"] = partial
+    return st
 
 
 def active_dates(days):
@@ -711,21 +805,33 @@ def launch(target, resume=False):
     os.execvp("claude", ["claude"] + (["--continue"] if resume else []))
 
 
+def github_reachable():
+    rc, _, _ = run(["gh", "api", "rate_limit", "--silent"], timeout=6)
+    return rc == 0
+
+
 def clone_repo(slug, name):
     """Ask, then clone into CLONE_ROOT/<name>. Return the path, or exit leaving nothing behind."""
+    if not name or "/" in name or name in (".", "..") or CONTROL_RE.search(name):
+        sys.exit(f"hub: refusing to clone into an unsafe name: {name!r}")
     target = os.path.join(CLONE_ROOT, name)
     if os.path.exists(target):
         return target
     if not shutil.which("gh"):
         sys.exit("hub: gh is not installed, cannot clone " + slug)
+    if (load_cache().get("gh") or {}).get("ok") is False and not github_reachable():
+        sys.exit(f"hub: GitHub is unreachable, cannot clone {slug} now. Nothing was changed.")
     try:
         ans = input(f"Clone {slug} to {target}? [y/N] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         ans = ""
     if ans != "y":
         sys.exit("hub: not cloned")
+    if os.path.exists(target):  # appeared while the prompt was open (another session): never touch it
+        return target
     rc = subprocess.run(["gh", "repo", "clone", slug, target]).returncode
     if rc != 0:
+        # target was verified absent immediately before the clone, so anything there is a partial of ours
         if os.path.isdir(target):
             shutil.rmtree(target, ignore_errors=True)
         sys.exit(f"hub: clone of {slug} failed (GitHub unreachable or no access); nothing was left on disk")
@@ -744,8 +850,9 @@ def stats_header(cache, today=None):
     t = period_totals(days, today, today)
     w = period_totals(days, monday(today), today)
     avg = avg_weekly_commits(days, today)
+    note = f" · stats partial ({s['partial']} repos timed out)" if s.get("partial") else ""
     return [f"streak {cur}d (best {best}d) · today {t[0]}c {t[1]}r +{kfmt(t[2])}/-{kfmt(t[3])}",
-            f"week {w[0]}c {w[1]}r +{kfmt(w[2])}/-{kfmt(w[3])} (avg {avg:.0f}c/wk)"]
+            f"week {w[0]}c {w[1]}r +{kfmt(w[2])}/-{kfmt(w[3])} (avg {avg:.0f}c/wk){note}"]
 
 
 def header_lines(cache, warn, gh_present):
@@ -791,8 +898,10 @@ def main(argv):
     if "-n" in args:
         try:
             n = int(args[args.index("-n") + 1])
+            if n < 1:
+                raise ValueError
         except (ValueError, IndexError):
-            sys.exit("hub: -n needs a number")
+            sys.exit("hub: -n needs a positive number")
     list_only = "--list" in args
     require_tools(["git"] if list_only else ["git", "fzf", "claude"])
     cache, entries = gather(cfg)
@@ -811,6 +920,9 @@ def main(argv):
          "--preview", f"{me} --preview {{3}} {{4}} {{5}}",
          "--preview-window", "right,45%,wrap,<100(down,40%,wrap)"],
         input="\n".join(lines), stdout=subprocess.PIPE, text=True)
+    if res.returncode not in (0, 1, 130):
+        sys.stderr.write(f"hub: fzf failed (exit {res.returncode})\n")
+        return res.returncode
     if res.returncode != 0:
         return 0
     out = res.stdout.split("\n")

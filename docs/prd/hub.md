@@ -160,7 +160,7 @@ All numbers are targets to be measured, not measurements.
 - **AC-6** While the terminal is 50 columns wide, each row shall fit on one line with the name intact and the preview shall appear below the list.
 - **AC-7** If `PATH` lacks `gh`, then the picker shall open with local repos and the header shall state that GitHub is unavailable.
 - **AC-8** If `PATH` lacks `fzf` or `claude`, then hub shall print one line naming the tool and exit non-zero without a traceback.
-- **AC-9** When the cache file is aged beyond 24 h with `touch -d`, the header shall show "stale".
+- **AC-9** When the cached GitHub fetch time is more than 24 h old (edit `gh.fetched_at` in the cache file), the header shall show "STALE". A failed refresh shall not reset that fetch time or discard the cached repos.
 - **AC-10** When a qualifying commit is made today in any scanned repo and a refresh completes, the current streak shall increase by one for that day only.
 - **AC-11** If a full calendar day passes with no qualifying commit, then the current streak shall read 0.
 - **AC-12** When a refresh completes, the today and this-week figures shall equal the sums of `git log --author` over the scanned repos for the same period.

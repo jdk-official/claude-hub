@@ -467,7 +467,7 @@ class Stats(Tmp):
         commits = hub.repo_commits(r)
         self.assertEqual(len(commits), 2)  # mine + the Claude co-authored one
         self.assertTrue(all(c["ins"] == 2 for c in commits))
-        st = hub.aggregate({r: ("repo", commits)}, None)
+        st = hub.aggregate({r: ("repo", commits)})
         day = time.strftime("%Y-%m-%d")
         self.assertEqual(st["days"][day]["c"], 2)
         self.assertEqual(st["days"][day]["ins"], 4)
@@ -490,6 +490,192 @@ class Stats(Tmp):
         self.assertIn("streak 2d", lines[0])
         self.assertIn("today 2c 1r +1.5k/-20", lines[0])
         self.assertIn("week 3c 2r", lines[1])
+
+
+class ReviewRegressions(Tmp):
+    """One test per finding from the independent review of iteration 1."""
+
+    def fake_run(self, table):
+        def run(args, cwd=None, timeout=3):
+            for key, val in table.items():
+                if key in " ".join(args):
+                    return val
+            return (1, "", "boom")
+        return run
+
+    def test_h1_failed_refresh_keeps_cached_repos(self):
+        prev = {"fetched_at": 111.0, "ok": True,
+                "repos": [{"name": "a", "owner": "o"}, {"name": "b", "owner": "p"}]}
+        with mock.patch.object(hub, "run", self.fake_run({"repo list o": (1, "", "no network"),
+                                                         "repo list p": (0, json.dumps([{"name": "b2"}]), "")})):
+            out = hub.fetch_github(["o", "p"], prev)
+        names = sorted(r["name"] for r in out["repos"])
+        self.assertEqual(names, ["a", "b2"])          # o kept from cache, p refreshed
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["fetched_at"], 111.0)     # stale marker not reset by a failure
+
+    def test_h1_all_ok_updates_fetched_at(self):
+        with mock.patch.object(hub, "run", self.fake_run({"repo list": (0, "[]", "")})):
+            out = hub.fetch_github(["o"], {"fetched_at": 1.0, "repos": []})
+        self.assertTrue(out["ok"])
+        self.assertGreater(out["fetched_at"], 1.0)
+
+    def test_m2_target_appearing_after_prompt_is_never_deleted(self):
+        root = os.path.join(self.tmp, "clones")
+        os.makedirs(root)
+        mine = os.path.join(root, "x")
+
+        def answer(_):
+            os.makedirs(mine)               # another session cloned it while we were prompting
+            with open(os.path.join(mine, "work.txt"), "w") as f:
+                f.write("keep")
+            return "y"
+        with mock.patch.object(hub, "CLONE_ROOT", root), mock.patch("builtins.input", side_effect=answer), \
+                mock.patch.object(hub.shutil, "which", return_value="/usr/bin/gh"), \
+                mock.patch.object(hub.subprocess, "run") as r:
+            self.assertEqual(hub.clone_repo("o/x", "x"), mine)
+        r.assert_not_called()
+        self.assertTrue(os.path.exists(os.path.join(mine, "work.txt")))
+
+    def test_m2_unsafe_names_refused(self):
+        for bad in ("..", "a/b", "x\ny", ""):
+            with self.assertRaises(SystemExit):
+                hub.clone_repo("o/x", bad)
+
+    def test_fr27_unreachable_github_refuses_before_prompting(self):
+        root = os.path.join(self.tmp, "clones")
+        os.makedirs(root)
+        hub.save_cache_section(gh={"ok": False, "repos": [], "fetched_at": 1, "last_attempt": 2})
+        with mock.patch.object(hub, "CLONE_ROOT", root), mock.patch.object(hub.shutil, "which", return_value="/usr/bin/gh"), \
+                mock.patch.object(hub, "github_reachable", return_value=False), \
+                mock.patch("builtins.input", side_effect=AssertionError("must not prompt")):
+            with self.assertRaises(SystemExit) as cm:
+                hub.clone_repo("o/x", "x")
+        self.assertIn("unreachable", str(cm.exception))
+
+    def test_m3_concurrent_cache_updates_do_not_lose_entries(self):
+        import threading
+        errs = []
+
+        def w(i):
+            try:
+                hub.update_cache(lambda c: c.setdefault("prs", {}).__setitem__(f"o/r{i}", {"pr_count": i, "fetched_at": 1}))
+            except Exception as e:   # pragma: no cover
+                errs.append(e)
+        th = [threading.Thread(target=w, args=(i,)) for i in range(12)]
+        [t.start() for t in th]
+        [t.join() for t in th]
+        self.assertEqual(errs, [])
+        self.assertEqual(len(hub.load_cache()["prs"]), 12)
+        self.assertEqual([f for f in os.listdir(self.cache) if f.endswith(".tmp")], [])
+
+    def test_m4_issues_disabled_still_counts_prs_and_caches(self):
+        hub.save_cache_section(gh={"ok": True, "repos": [], "fetched_at": 1, "last_attempt": 1})
+        calls = []
+
+        def run(args, cwd=None, timeout=3):
+            calls.append(args[1])
+            if args[1] == "pr":
+                return 0, json.dumps([{"title": "p1"}, {"title": "p2"}]), ""
+            return 1, "", "issues disabled"
+        with mock.patch.object(hub, "run", run), mock.patch.object(hub.shutil, "which", return_value="/x/gh"):
+            out = hub.fetch_prs("o/r")
+            self.assertEqual(out["pr_count"], 2)
+            self.assertTrue(out["issue_error"])
+            n = len(calls)
+            hub.fetch_prs("o/r")                  # served from cache within the TTL
+        self.assertEqual(len(calls), n)
+
+    def test_m5_stats_union_clones_and_key_on_picked_path(self):
+        a, b = os.path.join(self.tmp, "old"), os.path.join(self.tmp, "new")
+        today = time.strftime("%Y-%m-%dT12:00:00")
+        make_repo(a, remote="git@github.com:o/same.git", date=today)
+        make_repo(b, remote="git@github.com:o/same.git", commits=2, date=today)
+        local = hub.scan_local([self.tmp])
+        for l in local:                            # make "new" the most recent clone
+            l["ts"] = 200 if l["name"] == "new" else 100
+        st = hub.compute_stats(local)
+        self.assertEqual(list(st["repo_weeks"]), [b])
+        self.assertEqual(sum(v["c"] for v in st["days"].values()), 2)
+
+    def test_m6_git_runs_with_config_code_execution_disabled(self):
+        seen = []
+        with mock.patch.object(hub, "run", lambda args, cwd=None, timeout=3: (seen.append(args), (0, "", ""))[1]):
+            hub.git(["status"], "/tmp")
+        joined = " ".join(seen[0])
+        self.assertIn("core.fsmonitor=false", joined)
+        self.assertIn("core.hooksPath=/dev/null", joined)
+
+    def test_m6_fsmonitor_in_repo_config_does_not_execute(self):
+        r = os.path.join(self.tmp, "evil")
+        make_repo(r)
+        marker = os.path.join(self.tmp, "pwned")
+        sh(["git", "config", "core.fsmonitor", f"touch {marker}; true"], r)
+        hub.inspect_dir(self.tmp, r)
+        hub.repo_commits(r)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_l1_status_timeout_is_unknown_not_clean(self):
+        d = os.path.join(self.tmp, "r")
+        make_repo(d)
+        real = hub.run
+
+        def run(args, cwd=None, timeout=3):
+            if "status" in args:
+                return 1, "", "timed out"
+            return real(args, cwd=cwd, timeout=timeout)
+        with mock.patch.object(hub, "run", run):
+            l = hub.inspect_dir(self.tmp, d)
+        self.assertEqual(l["dirty"], -1)
+        e = {"name": "r", "slug": "", "path": d, "local": l, "gh": None, "ts": 0, "origin": ""}
+        self.assertIn("?", hub.state_text(e))
+        self.assertNotIn("clean", hub.state_text(e))
+
+    def test_l1_commit_timeout_marks_stats_partial(self):
+        d = os.path.join(self.tmp, "r")
+        make_repo(d)
+        with mock.patch.object(hub, "repo_commits", return_value=None):
+            st = hub.compute_stats(hub.scan_local([self.tmp]))
+        self.assertEqual(st["partial"], 1)
+        self.assertIn("partial", hub.stats_header({"stats": st})[1])
+
+    def test_l2_no_double_ago(self):
+        line = hub.gh_status_line({"gh": {"ok": True, "fetched_at": 100.0, "repos": [{}]}}, True, now=110.0)
+        self.assertNotIn("ago ago", line)
+        self.assertIn("just now", line)
+
+    def test_l3_schema_corrupt_cache_does_not_crash(self):
+        os.makedirs(self.cache)
+        bad = {"version": 1, "gh": "x", "prs": [], "stats": {"days": {"not-a-date": {"c": 1}, "2026-10-01": 5}}}
+        with open(hub.cache_file(), "w") as f:
+            json.dump(bad, f)
+        c = hub.load_cache()
+        self.assertNotIn("gh", c)
+        self.assertEqual(c["stats"]["days"], {})
+        self.assertTrue(hub.gh_status_line(c, True))
+        self.assertTrue(hub.stats_header(c))
+
+    def test_l4_control_characters_do_not_break_fields(self):
+        cfg = hub.load_config(os.path.join(self.tmp, "none"))[0]
+        e = {"name": "r", "slug": "o/r", "path": "/p/r", "local": None, "origin": "o", "ts": 1,
+             "gh": {"description": "tab\there\nnewline", "visibility": "PUBLIC", "name": "r", "owner": "o"}}
+        line = hub.fzf_lines([e], cfg, {})[1]
+        self.assertEqual(len(line.split("\t")), 5)
+
+    def test_l5_git_file_counts_as_repo(self):
+        wt = os.path.join(self.tmp, "wt")
+        os.makedirs(wt)
+        with open(os.path.join(wt, ".git"), "w") as f:
+            f.write("gitdir: /nowhere\n")
+        self.assertTrue(hub.inspect_dir(self.tmp, wt)["is_git"])
+
+    def test_l6_identity_is_strict(self):
+        q = hub.qualifies
+        self.assertTrue(q("x", "42+jdk-official@users.noreply.github.com", ""))
+        self.assertFalse(q("x", "notjdk-official@users.noreply.github.com", ""))
+        self.assertFalse(q("x", "jdk-official-evil@users.noreply.github.com", ""))
+        self.assertFalse(q("x", "x@example.com", "Claudia Smith <claudia@example.com>"))
+        self.assertTrue(q("x", "x@example.com", "Claude <noreply@anthropic.com>"))
 
 
 if __name__ == "__main__":
