@@ -36,13 +36,15 @@ Note: Q2 was pulled into iteration 1 (one preview-window flag). Not yet verified
 
 Iteration 1 also delivered: scrolling over the full list (up to 100 rows), part of FR-10/FR-11 (Q4); name+tags-only search (FR-34) and the tag filter are still open.
 
-## Future: iteration 3 (desktop integration)
+## Done: iteration 3 (desktop integration), built 2026-10-13
 
-- Launch hub automatically when Ghostty starts. Candidate: `initial-command = bash -c 'hub; exec bash'` in the
-  Ghostty config (first terminal only; falls back to a shell on esc). Open points: whether Ghostty runs as a
-  single instance (later windows would not count as "first"), and whether to use `command` for every window.
-  Requires the omarchy skill, a timestamped backup of the config, and `ghostty +validate-config`.
-  Related existing items: Hyprland keybind (C5), login pre-warm (C6).
+- Ghostty auto-launch: `initial-command = bash -c 'hub; exec bash'` added to `~/.config/ghostty/config`
+  (backup `config.bak-<timestamp>` beside it). Applies to the first terminal Ghostty opens; esc or quitting claude
+  leaves a shell. Verified with a fresh non-single-instance Ghostty (hub opened with no `-e`); the config passes
+  `ghostty +validate-config`.
+- Not verified: windows opened into an already-running single-instance Ghostty do not count as "first", so they
+  start a normal shell. If hub should open in every new window, use `command` instead (every tab and split too).
+- To revert: delete the two added lines (or restore the backup).
 
 ## Later
 

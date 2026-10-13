@@ -17,3 +17,4 @@ decisions also get their own record under `adr/` (see [adr/README.md](../adr/REA
 - 2026-10-13: Live refresh talks to fzf over a unix socket in a private 0700 per-session directory (XDG_RUNTIME_DIR, else
   the temp dir), removed on exit; never a TCP port. ctrl-r starts a detached refresh and returns at once.
 - 2026-10-13: With --track, header updates are queued before reload (actions after reload are dropped).
+- 2026-10-13: Ghostty auto-launch uses `initial-command` (first terminal only), not `command`, so tabs and splits stay plain shells.

@@ -4,4 +4,4 @@ In-flight work. One row per item; keep it current as status changes.
 
 | Item | Status | Notes |
 |---|---|---|
-| (none in flight) | | Next: iteration 3, Ghostty auto-launch. See [BACKLOG.md](BACKLOG.md). |
+| (none in flight) | | Iterations 1 to 3 are built; see [BACKLOG.md](BACKLOG.md). |
