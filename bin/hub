@@ -540,7 +540,26 @@ def wrap(text, width):
     return textwrap.fill(text, width=max(width, 20), break_long_words=True) if text else ""
 
 
+def dashboard_text(width=60, today=None):
+    """Preview for the home row: the contribution heatmap, streak and a marker legend."""
+    cache = load_cache()
+    s = cache.get("stats")
+    if not s:
+        return "~ dashboard\n\nstats: computing (first refresh), see next launch"
+    today = today or date.today()
+    out = ["~ dashboard", ""]
+    out.extend(stats_header(cache, today))
+    out.append("")
+    out.append("last 12 weeks (local clones, authored commits)")
+    out.extend(heatmap(s.get("days", {}), today, color=True))
+    out.append("")
+    out.append(wrap("Markers: ★ pinned  ●N dirty files  ↑N ahead  PRN open PRs  ☁ GitHub-only", width))
+    return "\n".join(out)
+
+
 def preview_text(path, slug, name, width=60):
+    if name == "~":
+        return dashboard_text(width)
     out = [name]
     gh = (load_cache().get("gh") or {}).get("repos", [])
     g = next((r for r in gh if slug and f"{r['owner']}/{r['name']}".lower() == slug.lower()), None)
@@ -778,26 +797,36 @@ def sparkline(weeks, today, n=8):
                         for i in range(n - 1, -1, -1)])
 
 
-def heatmap(days, today, weeks=12):
-    """Rows Mon..Sun, columns oldest week first; at most 80 columns wide."""
+SHADES = (238, 22, 28, 34, 40)  # 256-colour: none, then four greens like GitHub's graph
+
+
+def heatmap(days, today, weeks=12, color=False):
+    """Rows Mon..Sun, columns oldest week first; at most 80 columns wide. color=True uses coloured
+    squares (for the picker preview); otherwise plain glyphs that survive pipes and logs."""
     start = monday(today) - timedelta(weeks=weeks - 1)
     counts = [days.get((start + timedelta(days=i)).isoformat(), {}).get("c", 0)
               for i in range(weeks * 7)]
     mx = max(counts)
 
-    def level(c):
+    def level(c):  # 0 = none, 1..4 = low..high, relative to the busiest day
         if c <= 0 or mx <= 0:
-            return "·"
-        return HEAT[min(3, -(-c * 4 // mx) - 1)]
+            return 0
+        return min(4, -(-c * 4 // mx))
+
+    def cell(idx):
+        if color:
+            return f"\x1b[38;5;{SHADES[idx]}m■\x1b[0m"
+        return "·" if idx == 0 else HEAT[idx - 1]
     names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     lines = []
     for r in range(7):
         cells = []
         for w in range(weeks):
             d = start + timedelta(days=w * 7 + r)
-            cells.append(" " if d > today else level(counts[w * 7 + r]))
+            cells.append(" " if d > today else cell(level(counts[w * 7 + r])))
         lines.append(f"{names[r]}  " + " ".join(cells))
-    lines.append(f"      less {HEAT} more   (· none)   weeks start {start.isoformat()}")
+    scale = " ".join(cell(i) for i in range(5))
+    lines.append(f"      less {scale} more   weeks start {start.isoformat()}")
     return lines
 
 
@@ -956,7 +985,7 @@ def run_stats(args, cfg):
         return 0
     print("\n".join(stats_header({"stats": s})))
     print()
-    print("\n".join(heatmap(days, date.today())))
+    print("\n".join(heatmap(days, date.today(), color=sys.stdout.isatty())))
     return 0
 
 

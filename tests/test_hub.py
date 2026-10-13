@@ -362,6 +362,24 @@ class PreviewLayout(unittest.TestCase):
         self.assertIn("<45(down", hub.PREVIEW_WINDOW)
 
 
+class Dashboard(Tmp):
+    def test_home_preview_shows_heatmap_and_streak(self):
+        from datetime import date
+        today = date.today().isoformat()
+        hub.save_cache_section(stats={"computed_at": 1, "days": {today: {"c": 3, "ins": 5, "del": 1, "repos": ["a"]}},
+                                      "repo_weeks": {}, "partial": 0})
+        text = hub.preview_text(os.path.expanduser("~"), "", "~", 60)
+        self.assertIn("Mon", text)
+        self.assertIn("streak 1d", text)
+        self.assertIn("Markers:", text)
+        import re
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", text)   # width is what the user sees, not escape bytes
+        self.assertLessEqual(max(len(l) for l in plain.splitlines()), 80)
+
+    def test_home_preview_without_stats(self):
+        self.assertIn("computing", hub.preview_text("/home/x", "", "~", 60))
+
+
 class Preview(Tmp):
     def test_preview_wraps_and_has_commits_and_excerpt(self):  # FR-17/18/20
         d = os.path.join(self.tmp, "proj")
@@ -453,6 +471,14 @@ class Stats(Tmp):
         self.assertTrue(lines[0].startswith("Mon"))
         self.assertIn("█", lines[0])   # Monday 2026-10-12 holds the max
         self.assertIn("▒", lines[1])   # Tuesday today: 1 of max 3
+        self.assertNotIn("\x1b", "".join(lines))  # plain by default
+
+    def test_heatmap_color_mode(self):
+        D = self.D
+        days = self.days({"2026-10-12": (3, 0, 0, []), "2026-10-13": (1, 0, 0, [])})
+        lines = hub.heatmap(days, D("2026-10-13"), color=True)
+        self.assertIn("\x1b[38;5;40m■", lines[0])   # busiest day uses the top green
+        self.assertIn("\x1b[38;5;238m■", lines[0])  # empty days use the dim grey
 
     def test_repo_commits_end_to_end(self):
         r = os.path.join(self.tmp, "repo")
