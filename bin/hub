@@ -285,11 +285,17 @@ def fetch_github(owners, prev=None):
     for owner in owners:
         rc, out, err = run(
             ["gh", "repo", "list", owner, "--limit", str(MAX_ROWS), "--json",
-             "name,description,pushedAt,visibility,isArchived"], timeout=GH_TIMEOUT)
+             "name,description,pushedAt,visibility,isArchived,pullRequests,issues"], timeout=GH_TIMEOUT)
         got = None
         if rc == 0:
             try:
-                got = [dict(r, owner=owner) for r in json.loads(out)]
+                got = []
+                for r in json.loads(out):
+                    r["owner"] = owner
+                    # open counts straight from the listing; ordering never depends on what you viewed
+                    r["pr_count"] = int((r.pop("pullRequests", None) or {}).get("totalCount", 0))
+                    r["issue_count"] = int((r.pop("issues", None) or {}).get("totalCount", 0))
+                    got.append(r)
             except (ValueError, TypeError):
                 got = None
         if got is None:
@@ -443,9 +449,12 @@ def build_entries(local, gh_repos, cfg):
 
 # --- P5: ordering and markers -----------------------------------------------
 
-def pr_count(e, prs):
-    p = (prs or {}).get(e["slug"]) if e["slug"] else None
-    return int(p.get("pr_count", 0)) if p else 0
+def pr_count(e, prs=None):
+    """Open PRs as of the last background refresh. `prs` is unused: viewing a repo must not reorder."""
+    try:
+        return int((e.get("gh") or {}).get("pr_count", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def needs_attention(e, prs):
@@ -533,10 +542,46 @@ def excerpt(path, n=EXCERPT_LINES):
     return "", []
 
 
+def prs_file():
+    return os.path.join(CACHE_DIR, "prs.json")
+
+
+def load_prs():
+    try:
+        with open(prs_file()) as f:
+            data = json.load(f)
+        return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_pr(slug, entry):
+    tmp = None
+    try:
+        ensure_cache_dir()
+        with open(os.path.join(CACHE_DIR, "prs.lock"), "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            data = load_prs()
+            data[slug] = entry
+            tmp = prs_file() + f".{os.getpid()}.tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, prs_file())
+            tmp = None
+    except (OSError, TypeError, ValueError):
+        pass
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def fetch_prs(slug):
     """Open PR and issue counts + top-3 titles via gh; cached for PR_TTL (failures too)."""
     cache = load_cache()
-    cur = (cache.get("prs") or {}).get(slug)
+    cur = load_prs().get(slug)
     if cur and time.time() - cur.get("fetched_at", 0) < PR_TTL:
         return cur
     if not shutil.which("gh") or (cache.get("gh") or {}).get("ok") is False:
@@ -556,7 +601,7 @@ def fetch_prs(slug):
             continue
         out[f"{kind}_count"] = len(items)
         out[f"{kind}_titles"] = [str(i.get("title", "")) for i in items[:3] if isinstance(i, dict)]
-    update_cache(lambda c: c.setdefault("prs", {}).__setitem__(slug, out))
+    save_pr(slug, out)
     return out
 
 
@@ -856,9 +901,21 @@ def heatmap(days, today, weeks=12, color=False):
 
 # --- P8: launch -------------------------------------------------------------
 
+def claude_argv(resume=False, home=None):
+    """Same flags the user's `claude` shell function adds: the project-dashboard mod, if installed."""
+    mod = os.path.join(home or HOME, ".claude", "mods", "project-dashboard")
+    argv = ["claude"]
+    if os.path.isdir(mod):
+        argv += ["--plugin-dir", mod]
+    if resume:
+        argv.append("--continue")
+    return argv
+
+
 def launch(target, resume=False):
     os.chdir(target)
-    os.execvp("claude", ["claude"] + (["--continue"] if resume else []))
+    argv = claude_argv(resume)
+    os.execvp("claude", argv)
 
 
 def github_reachable():

@@ -129,7 +129,8 @@ try:
     assert ready(port), "fzf --listen server did not come up"
     before = state(port)["current"]["text"]
     post(port, f"reload(cat {ITEMS2})")
-    time.sleep(0.6)
+    wait(lambda: "zeta" in screen(), 5)
+    time.sleep(0.3)
     after = state(port)["current"]["text"]
     record("reload via --listen with --track --id-nth keeps the highlighted row",
            "gamma" in before and "gamma" in after, f"before={before.split()[0]} after={after.split()[0]}")
@@ -145,7 +146,7 @@ keys("a", literal=True)
 try:
     assert ready(port), "fzf --listen server did not come up"
     post(port, f"reload(cat {ITEMS2})")
-    time.sleep(0.6)
+    wait(lambda: "zeta" in screen(), 5)
     st = state(port)
     record("reload preserves the typed query", st.get("query") == "a", f"query={st.get('query')!r}")
 except Exception as e:  # pragma: no cover
@@ -165,14 +166,14 @@ except Exception as e:  # pragma: no cover
 out = os.path.join(TMP, "became.txt")
 start(BASE + f" --bind 'enter:become(printf \"%s\\n\" {{3}} > {out})' --layout reverse")
 keys("Down", "Enter")
-time.sleep(0.5)
+wait(lambda: os.path.exists(out) and open(out).read().strip() != "", 5)
 got = open(out).read().strip() if os.path.exists(out) else ""
 record("become() runs with the selected row's field", got == "/p/beta", f"got={got!r}")
 
 # 9. --expect still returns the key (current launch mechanism)
 start(f"cat {ITEMS} | fzf --delimiter '\\t' --with-nth 2 --expect ctrl-l --layout reverse > {out}; cat {out}")
 keys("C-l")
-time.sleep(0.5)
+wait(lambda: "ctrl-l" in screen(), 5)
 record("--expect returns the pressed key", "ctrl-l" in screen())
 
 
@@ -182,7 +183,8 @@ for label, chain, expect in (("header after reload", 'reload(printf "a\\n")+chan
     start(f"printf 'a\\nb\\n' | fzf --header-first --header OLD --track --id-nth 1 --layout reverse "
           f"--bind 'ctrl-t:{chain}'")
     keys("C-t")
-    time.sleep(0.5)
+    wait(lambda: "BEFORE" in screen() or "AFTER" in screen(), 3)
+    time.sleep(0.7)   # the negative case needs a fixed grace period
     applied = ("AFTER" in screen()) or ("BEFORE" in screen())
     record(f"--track: {label} {'applies' if expect else 'is dropped'}", applied == expect)
 

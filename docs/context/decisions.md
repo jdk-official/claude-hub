@@ -17,4 +17,8 @@ decisions also get their own record under `adr/` (see [adr/README.md](../adr/REA
 - 2026-10-13: Live refresh talks to fzf over a unix socket in a private 0700 per-session directory (XDG_RUNTIME_DIR, else
   the temp dir), removed on exit; never a TCP port. ctrl-r starts a detached refresh and returns at once.
 - 2026-10-13: With --track, header updates are queued before reload (actions after reload are dropped).
-- 2026-10-13: Ghostty auto-launch uses `initial-command` (first terminal only), not `command`, so tabs and splits stay plain shells.
+- 2026-10-13: Auto-launch is a `~/.bashrc` block, not Ghostty `initial-command`: the latter only fires for the first surface of a
+  fresh app start and never fires in the user's long-running single instance. Tabs and splits also open the picker; esc dismisses.
+- 2026-10-13: PR/issue counts used for ordering come from the background refresh's bulk listing. Viewing a project may fetch PR
+  titles for the preview but writes only prs.json, never the main cache, so it can neither reorder nor reload the list.
+- 2026-10-13: hub passes the same `--plugin-dir` for the project-dashboard mod that the user's `claude()` shell function adds.

@@ -22,7 +22,10 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
   PRs/issues), launch (new / resume with ctrl-l, clone confirm), stats header, per-repo sparkline,
   `hub stats` heatmap, responsive preview, dashboard (heatmap) on the home row. Tests: `python3 -m unittest discover -s tests`
   runs unit tests plus end-to-end tests that drive the real picker in tmux (needs tmux and fzf).
-- Done (iteration 3): Ghostty `initial-command` launches hub in the first terminal; config backed up and validated.
+- Done (iteration 3): hub opens in every new Ghostty shell via a `~/.bashrc` block (verified into the running instance);
+  `initial-command` was dropped because it never fires in a long-running single instance. Opt out with HUB_AUTOSTART=0.
+- Fixed after use: viewing a project no longer moves it up (PR counts come from the refresh); hub now launches claude
+  with the dashboard mod like the shell function does.
 - Reviewed: independent code review (1 HIGH, 6 MEDIUM, 7 LOW) all addressed in `review-fixes`: failed refresh no longer
   wipes cached repos, clone cleanup can never delete a directory hub did not create, locked cache writes,
   git runs with fsmonitor/hooks disabled, stats union clones and flag timeouts. 63 tests.

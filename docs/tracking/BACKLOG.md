@@ -38,13 +38,18 @@ Iteration 1 also delivered: scrolling over the full list (up to 100 rows), part 
 
 ## Done: iteration 3 (desktop integration), built 2026-10-13
 
-- Ghostty auto-launch: `initial-command = bash -c 'hub; exec bash'` added to `~/.config/ghostty/config`
-  (backup `config.bak-<timestamp>` beside it). Applies to the first terminal Ghostty opens; esc or quitting claude
-  leaves a shell. Verified with a fresh non-single-instance Ghostty (hub opened with no `-e`); the config passes
-  `ghostty +validate-config`.
-- Not verified: windows opened into an already-running single-instance Ghostty do not count as "first", so they
-  start a normal shell. If hub should open in every new window, use `command` instead (every tab and split too).
-- To revert: delete the two added lines (or restore the backup).
+- Auto-launch moved from Ghostty `initial-command` to a small block at the end of `~/.bashrc`. Reason: with a
+  background single-instance Ghostty (`--initial-window=false`, quick terminal, a Codex window) `initial-command`
+  only fires for the first surface when the app starts, so `ghostty` did nothing. The shell block runs for every
+  new interactive Ghostty shell, so it fires for windows opened into the running instance.
+- The block: runs `hub` when `TERM_PROGRAM=ghostty`, `HUB_STARTED` is unset and `HUB_AUTOSTART` is not `0`; it
+  exports `HUB_STARTED` so nested shells skip it. Esc leaves you at the prompt in the same shell, so Ghostty's
+  shell integration is kept.
+- Verified: `ghostty +new-window` into the running instance opened hub; closing that window left the instance and
+  other windows alone. Commands run with `-e` (codex, claude keybind, btop) bypass the shell and are unaffected.
+- Behaviour to know: new tabs and splits are new shells, so they also open the picker; esc dismisses it. Disable
+  everywhere with `HUB_AUTOSTART=0` (add `export HUB_AUTOSTART=0` to the shell, or delete the block).
+- To revert: remove the block from `~/.bashrc` (backups: `~/.bashrc.bak-<timestamp>`).
 
 ## Later
 

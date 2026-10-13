@@ -158,8 +158,9 @@ class Ordering(unittest.TestCase):
         self.assertEqual(hub.order_entries(es, self.cfg)[0]["name"], "dirty-old")
 
     def test_ahead_and_pr_count_as_attention(self):
-        es = [entry("a", ts=9), entry("b", ts=1, ahead=1), entry("c", slug="o/c", ts=2)]
-        order = hub.order_entries(es, self.cfg, {"o/c": {"pr_count": 1}})
+        es = [entry("a", ts=9), entry("b", ts=1, ahead=1),
+              entry("c", slug="o/c", ts=2, gh={"name": "c", "owner": "o", "pr_count": 1})]
+        order = hub.order_entries(es, self.cfg)
         self.assertEqual([e["name"] for e in order], ["c", "b", "a"])
 
     def test_pinned_first_in_config_order(self):  # AC-18
@@ -169,7 +170,7 @@ class Ordering(unittest.TestCase):
 
     def test_markers(self):
         cfg = dict(self.cfg, pinned=["a"])
-        m = hub.markers(entry("a", dirty=3, ahead=2, slug="o/a"), cfg, {"o/a": {"pr_count": 1}})
+        m = hub.markers(entry("a", dirty=3, ahead=2, slug="o/a", gh={"pr_count": 1}), cfg)
         self.assertEqual(m, "★ ●3 ↑2 PR1")
         self.assertEqual(hub.markers(entry("g", local=False), self.cfg), "☁")
 
@@ -353,6 +354,18 @@ class Cli(Tmp):
             hub.gather(cfg)
             hub.gh_status_line({}, True)
         self.assertLess(time.time() - t, 2)
+
+
+class ClaudeArgs(Tmp):
+    def test_plain_when_no_mod(self):
+        self.assertEqual(hub.claude_argv(False, home=self.tmp), ["claude"])
+        self.assertEqual(hub.claude_argv(True, home=self.tmp), ["claude", "--continue"])
+
+    def test_mod_dir_is_passed_like_the_shell_function(self):
+        mod = os.path.join(self.tmp, ".claude", "mods", "project-dashboard")
+        os.makedirs(mod)
+        self.assertEqual(hub.claude_argv(False, home=self.tmp), ["claude", "--plugin-dir", mod])
+        self.assertEqual(hub.claude_argv(True, home=self.tmp), ["claude", "--plugin-dir", mod, "--continue"])
 
 
 class PreviewLayout(unittest.TestCase):
@@ -837,6 +850,39 @@ class Iteration2Units(Tmp):
         body = bodies[0]
         self.assertLess(body.index("transform-header("), body.index("reload("))
         self.assertIn("change-prompt(repo> )", body)
+
+
+class ViewingNeverReorders(Tmp):
+    """Highlighting a project used to cache its PR count, which promoted it. It must be read-only now."""
+
+    def test_bulk_listing_carries_open_counts(self):
+        payload = json.dumps([{"name": "r", "pushedAt": "2026-10-01T00:00:00Z", "isArchived": False,
+                               "visibility": "PRIVATE", "description": "",
+                               "pullRequests": {"totalCount": 2}, "issues": {"totalCount": 7}}])
+        with mock.patch.object(hub, "run", lambda *a, **k: (0, payload, "")):
+            out = hub.fetch_github(["o"])
+        r = out["repos"][0]
+        self.assertEqual((r["pr_count"], r["issue_count"]), (2, 7))
+        self.assertNotIn("pullRequests", r)
+
+    def test_preview_fetch_changes_neither_order_nor_main_cache(self):
+        hub.save_cache_section(gh={"ok": True, "fetched_at": time.time(), "last_attempt": 1, "error": "",
+                                   "repos": [{"name": "quiet", "owner": "o", "pr_count": 0},
+                                             {"name": "busy", "owner": "o", "pr_count": 0}]})
+        cfg = dict(hub.DEFAULT_CONFIG, pinned=[])
+        es = [entry("quiet", slug="o/quiet", ts=50, gh={"name": "quiet", "owner": "o", "pr_count": 0}),
+              entry("busy", slug="o/busy", ts=10, gh={"name": "busy", "owner": "o", "pr_count": 0})]
+        before_order = [e["name"] for e in hub.order_entries(es, cfg)]
+        before_mtime = hub.cache_mtime()
+
+        def run(args, cwd=None, timeout=3):
+            return 0, json.dumps([{"title": "a PR"}] if args[1] == "pr" else []), ""
+        with mock.patch.object(hub, "run", run), mock.patch.object(hub.shutil, "which", return_value="/x/gh"):
+            got = hub.fetch_prs("o/busy")
+        self.assertEqual(got["pr_count"], 1)                      # the preview still shows the PR
+        self.assertEqual([e["name"] for e in hub.order_entries(es, cfg)], before_order)
+        self.assertEqual(hub.cache_mtime(), before_mtime)         # no reload is triggered
+        self.assertIn("o/busy", hub.load_prs())
 
 
 if __name__ == "__main__":
