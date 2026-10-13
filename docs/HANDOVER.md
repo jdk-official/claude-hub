@@ -17,9 +17,14 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
 
 ## Current state
 
-- Done: working launcher (`bin/hub`), requirements brainstorm with selected scope and gamification, repo on GitHub (`jdk-official/hub`, private), workspace scaffolded under agent-catalog.
-- In progress: nothing implemented beyond v0.
-- Blocked on the user: confirm the gamification counting rules and the open questions in section 4.
+- Done (2026-10-13): iteration 1 built autonomously and merged to main: tool checks, cache (`~/.cache/hub`),
+  TOML config, scan roots, needs-attention ordering and markers, preview (commits, HANDOVER/README excerpt,
+  PRs/issues), launch (new / resume with ctrl-l, clone confirm), stats header, per-repo sparkline,
+  `hub stats` heatmap, responsive preview. 46 unit tests (`python3 -m unittest discover -s tests`).
+- In progress: independent code review of iteration 1.
+- Not done: iteration 2 (fzf header-first, footer, in-place reload, name-only search, tag filter).
+- Unverified: behaviour in the real narrow Ghostty window; interactive launch into claude (tested up to
+  the picker and preview only).
 
 ## How to resume
 
@@ -29,6 +34,6 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
 
 ## Open items
 
-1. Cache + background refresh (M1/M2) and narrow-terminal layout (M5).
-2. Header with streak and today/week stats (G1/G2); per-repo sparkline (G3).
-3. Pin/hide config, tags, needs-attention sort, PRs/issues, HANDOVER excerpt, resume key.
+1. Triage the review findings, then push `main`.
+2. Q1 fzf spike, then Q3-Q6 from [BACKLOG.md](tracking/BACKLOG.md).
+3. Confirm the stats look right to the user (lines changed include vendored-tooling commits).
