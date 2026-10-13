@@ -25,7 +25,10 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
 - Reviewed: independent code review (1 HIGH, 6 MEDIUM, 7 LOW) all addressed in `review-fixes`: failed refresh no longer
   wipes cached repos, clone cleanup can never delete a directory hub did not create, locked cache writes,
   git runs with fsmonitor/hooks disabled, stats union clones and flag timeouts. 63 tests.
-- Not done: iteration 2 (fzf header-first, footer, in-place reload, name-only search, tag filter).
+- Reviewed twice (iteration 2 review: 1 HIGH, 4 MEDIUM, 6 LOW, all addressed or documented).
+- Done (iteration 2): header above the prompt, key-hint footer, name-and-tags-only search, in-place background
+  refresh over a private unix socket (`--listen`), `ctrl-r` refresh, `ctrl-t` tag filter. 22 end-to-end tests drive the
+  real picker in tmux; the fzf spike script (tests/spikes/fzf_spike.py in the repo) verifies the fzf mechanisms (13/13).
 - Unverified: behaviour in the real narrow Ghostty window; interactive launch into claude (tested up to
   the picker and preview only).
 
@@ -38,5 +41,5 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
 ## Open items
 
 1. Verify the picker in the real narrow Ghostty window, then start iteration 2.
-2. Q3-Q6 from [BACKLOG.md](tracking/BACKLOG.md); the fzf spike is done, see [fzf-spike](reference/fzf-spike.md).
+2. Iteration 3 (Ghostty auto-launch) from [BACKLOG.md](tracking/BACKLOG.md); fzf findings are in [fzf-spike](reference/fzf-spike.md).
 3. Confirm the stats look right to the user (lines changed include vendored-tooling commits; line counts cover the last 14 days only, streaks and sparklines cover 400 days).

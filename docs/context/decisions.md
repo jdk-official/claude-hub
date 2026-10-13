@@ -13,3 +13,7 @@ decisions also get their own record under `adr/` (see [adr/README.md](../adr/REA
 - 2026-10-13: Order is pinned, then needs-attention, then recency (user-confirmed).
 - 2026-10-13: Weeks run Monday to Sunday; lines changed = insertions + deletions, merges excluded (user-confirmed).
 - 2026-10-13: Keys: ctrl-r refresh, ctrl-l resume, ctrl-t tag filter; ctrl-g stays fzf's abort alias (user-confirmed).
+- 2026-10-13: Search matches name and tags only (fields 2-3, `--with-nth 2,3,4 --nth 1,2`); verified by spike.
+- 2026-10-13: Live refresh talks to fzf over a unix socket in a private 0700 per-session directory (XDG_RUNTIME_DIR, else
+  the temp dir), removed on exit; never a TCP port. ctrl-r starts a detached refresh and returns at once.
+- 2026-10-13: With --track, header updates are queued before reload (actions after reload are dropped).

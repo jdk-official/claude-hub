@@ -25,7 +25,12 @@ tmux pane. Result: 11 of 11 checks pass. This settles assumption row 11 of the P
    refused. Retry briefly (the spike polls up to 3 s).
 3. **`<N` in `--preview-window` is the preview pane's width**, not the terminal's. At 45% it means a terminal under
    100 columns when N is 45. Already fixed in `bin/hub`.
-4. **Reload needs identity.** Without `--track --id-nth 1` the cursor jumps to the top on reload.
+4. **Order of actions matters under `--track`.** An action queued after `reload` (for example `change-header` or
+   `transform-header`) is silently dropped while fzf searches for the tracked row. Put the header update before
+   the reload: `transform-header(...)+reload(...)`. This cost an end-to-end test failure to find.
+5. **`execute-silent` is synchronous**, so `execute-silent(cmd)+transform-header(...)+reload(...)` is the way to
+   write state first and then rebuild from it.
+6. **Reload needs identity.** Without `--track --id-nth 1` the cursor jumps to the top on reload.
 
 ## Consequences for iteration 2
 

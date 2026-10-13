@@ -4,4 +4,4 @@ In-flight work. One row per item; keep it current as status changes.
 
 | Item | Status | Notes |
 |---|---|---|
-| Iteration 2 (Q3 to Q6) | Ready | Q1 spike done; see [BACKLOG.md](BACKLOG.md). |
+| (none in flight) | | Next: iteration 3, Ghostty auto-launch. See [BACKLOG.md](BACKLOG.md). |
