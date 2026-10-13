@@ -22,7 +22,9 @@ def tmux(*a):
 def start(cmd, cols=100, rows=24):
     tmux("kill-server")
     tmux("new-session", "-d", "-s", "s", "-x", str(cols), "-y", str(rows), f"{cmd}; echo SPIKE_EXIT=$?; sleep 20")
-    time.sleep(0.8)
+    # keys sent before fzf has drawn its list are lost, which made checks flaky under load
+    wait(lambda: "alpha" in screen(), 8)   # every check starts from the same four-item list
+    time.sleep(0.4)
 
 
 def screen():
@@ -31,6 +33,13 @@ def screen():
 
 def keys(*k, literal=False):
     tmux("send-keys", "-t", "s", *(["-l"] if literal else []), *k)
+    time.sleep(0.3)
+
+
+def typed(text):
+    """Type literal text and wait until fzf shows it on the prompt line (keys are processed asynchronously)."""
+    keys(text, literal=True)
+    wait(lambda: any(l.lstrip().startswith(">") and text in l for l in screen().splitlines()), 5)
     time.sleep(0.3)
 
 
@@ -51,7 +60,7 @@ def free_port():
     return p
 
 
-def ready(port, tries=30):
+def ready(port, tries=100):
     for _ in range(tries):
         try:
             state(port)
@@ -59,6 +68,16 @@ def ready(port, tries=30):
         except Exception:
             time.sleep(0.1)
     return False
+
+
+def start_listen(base, extra):
+    """Start fzf with --listen on a free port; retry with a new port if something else took it first."""
+    for _ in range(3):
+        port = free_port()
+        start(base + f" --listen {port} " + extra)
+        if ready(port, 40):
+            return port
+    return port
 
 
 def post(port, action):
@@ -103,27 +122,30 @@ record("--footer renders", "FOOTER KEYS" in screen())
 
 # 3. naive attempt: --with-nth 2 --nth 1 over one tab-free display field does NOT restrict search
 start(BASE + " --nth 1 --layout reverse")
-keys("clean", literal=True)
+typed("clean")
+# final states: "0/4" = search restricted to the name field; "2/4" = display columns are still searched
+wait(lambda: "0/4" in screen() or "2/4" in screen(), 6)
 t = screen()
-naive_restricts = "alpha" not in t and "delta" not in t
+naive_restricts = "0/4" in t
 record("(finding) --with-nth 2 --nth 1 does not restrict search to the name",
        not naive_restricts, "display columns are still searched" if not naive_restricts else "unexpectedly restricted")
 
 # 4. working approach: show fields 1,2 (name, columns) and search field 1 only
 TWO = f"cat {ITEMS} | fzf --delimiter '\\t' --with-nth 1,2 --nth 1 --layout reverse"
 start(TWO)
-keys("clean", literal=True)
+typed("clean")
+wait(lambda: "0/4" in screen(), 5)      # filtering is asynchronous: wait for the result count
 t = screen()
 record("--with-nth 1,2 --nth 1: a query matching only a column matches nothing",
        "alpha" not in t and "delta" not in t and "0/4" in t)
 start(TWO)
-keys("gam", literal=True)
+typed("gam")
+wait(lambda: "1/4" in screen(), 5)
 t = screen()
 record("--with-nth 1,2 --nth 1: a name query finds the row", "gamma" in t and "alpha" not in t)
 
 # 5. reload via --listen keeps cursor and query with --track --id-nth
-port = free_port()
-start(BASE + f" --listen {port} --track --id-nth 1 --layout reverse")
+port = start_listen(BASE, "--track --id-nth 1 --layout reverse")
 keys("Down", "Down")       # cursor on gamma (rows: alpha, beta, gamma, delta)
 try:
     assert ready(port), "fzf --listen server did not come up"
@@ -140,9 +162,8 @@ except Exception as e:  # pragma: no cover
     record("reload via --listen", False, repr(e))
 
 # 6. reload preserves the query
-port = free_port()
-start(BASE + f" --listen {port} --track --id-nth 1 --layout reverse")
-keys("a", literal=True)
+port = start_listen(BASE, "--track --id-nth 1 --layout reverse")
+typed("a")
 try:
     assert ready(port), "fzf --listen server did not come up"
     post(port, f"reload(cat {ITEMS2})")
@@ -153,8 +174,7 @@ except Exception as e:  # pragma: no cover
     record("reload preserves query", False, repr(e))
 
 # 7. change-header from outside
-port = free_port()
-start(BASE + f" --listen {port} --header 'OLD HEADER' --header-first --layout reverse")
+port = start_listen(BASE, "--header 'OLD HEADER' --header-first --layout reverse")
 try:
     assert ready(port), "fzf --listen server did not come up"
     post(port, "change-header(NEW HEADER streak 2d)")

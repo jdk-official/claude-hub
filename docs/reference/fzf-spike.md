@@ -39,3 +39,14 @@ tmux pane. Result: 11 of 11 checks pass. This settles assumption row 11 of the P
 - Q5 (in-place refresh): start fzf with `--listen`, run the refresh in the background, then POST `reload(...)` and
   `change-header(...)`. `ctrl-r` posts the same reload.
 - Port selection: bind a free port at launch and pass it to the refresher; never listen on a non-loopback address.
+
+## Reliability of the spike script
+
+`tests/spikes/fzf_spike.py` drives real fzf in tmux and reads the screen. On an idle machine it passes 13/13
+repeatedly. On a heavily loaded machine (several test suites and Claude sessions at once) one or two checks
+occasionally fail because the screen is read before fzf has finished drawing or filtering, and the failing check
+changes from run to run. It waits for the list, for typed text to appear, and for result counts, and retries
+`--listen` ports, but it cannot remove load-induced timing. If it shows 12/13 or 11/13, re-run it when the machine
+is quiet before treating it as a regression. It is a diagnostic, not part of the test suite: the end-to-end tests
+use the same waiting approach and have been stable.
+
