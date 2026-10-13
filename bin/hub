@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""hub: pick a recent repo (GitHub + local) and launch claude in it.
+
+Usage: hub [-n COUNT] [--list]
+  -n COUNT  number of repos to show (default 10)
+  --list    print the table and exit, no picker
+"""
+import json, os, subprocess, sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+
+GH_OWNER = "jdk-official"
+GH_DIR = "/mnt/data/github"
+HOME = os.path.expanduser("~")
+SEP = "\x1f"  # stands in for newline inside one fzf field
+
+
+def run(args, cwd=None, timeout=15):
+    try:
+        r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def gh_repos():
+    out = run(["gh", "repo", "list", GH_OWNER, "--limit", "100", "--json",
+               "name,description,pushedAt,visibility,isArchived"], timeout=20)
+    try:
+        return {r["name"]: r for r in json.loads(out)}
+    except (ValueError, KeyError):
+        return None
+
+
+def local_repo(path):
+    name = os.path.basename(path)
+    if not os.path.isdir(os.path.join(path, ".git")):
+        return None
+    ts = run(["git", "log", "-1", "--format=%ct"], cwd=path)
+    branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path) or "?"
+    dirty = len(run(["git", "status", "--porcelain"], cwd=path).splitlines())
+    remote = run(["git", "remote", "get-url", "origin"], cwd=path)
+    ab = run(["git", "rev-list", "--left-right", "--count", "@{u}...HEAD"], cwd=path)
+    behind = ahead = None
+    if ab:
+        behind, ahead = (int(x) for x in ab.split())
+    # newest of last commit and last file change in the working tree metadata
+    return dict(name=name, path=path, ts=int(ts) if ts else 0, branch=branch,
+                dirty=dirty, remote=remote, ahead=ahead, behind=behind)
+
+
+def age(ts):
+    if not ts:
+        return "never"
+    d = (datetime.now(timezone.utc) - datetime.fromtimestamp(ts, timezone.utc)).days
+    if d < 1:
+        return "today"
+    if d < 14:
+        return f"{d}d ago"
+    if d < 90:
+        return f"{d // 7}w ago"
+    return f"{d // 30}mo ago"
+
+
+def collect():
+    with ThreadPoolExecutor(8) as ex:
+        gh_f = ex.submit(gh_repos)
+        paths = [os.path.join(GH_DIR, d) for d in sorted(os.listdir(GH_DIR))]
+        locs = [r for r in ex.map(local_repo, paths) if r]
+        gh = gh_f.result()
+    repos = {}
+    for l in locs:
+        repos[l["name"]] = dict(name=l["name"], local=l, gh=None, ts=l["ts"])
+    for name, g in (gh or {}).items():
+        ts = int(datetime.fromisoformat(g["pushedAt"].replace("Z", "+00:00")).timestamp())
+        e = repos.setdefault(name, dict(name=name, local=None, gh=None, ts=0))
+        e["gh"] = g
+        e["ts"] = max(e["ts"], ts)
+    return sorted(repos.values(), key=lambda r: r["ts"], reverse=True), gh is not None
+
+
+def row(r):
+    l, g = r["local"], r["gh"]
+    where = "local+gh" if l and g else "local" if l else "gh only"
+    if l:
+        st = f"{l['branch']}" + (f" *{l['dirty']}" if l["dirty"] else " clean")
+        if l["ahead"]:
+            st += f" ↑{l['ahead']}"
+        if l["behind"]:
+            st += f" ↓{l['behind']}"
+        if not l["remote"]:
+            st += " no-remote"
+    else:
+        st = "not cloned"
+    desc = (g or {}).get("description") or ""
+    vis = (g or {}).get("visibility", "").lower()
+    cells = [r["name"], where, vis, age(r["ts"]), st, desc]
+    detail = [r["name"], ""]
+    detail.append(f"Path:    {l['path']}" if l else f"Clone:   {GH_DIR}/{r['name']} (on launch)")
+    detail.append(f"Where:   {where}" + (f" ({vis})" if vis else ""))
+    detail.append(f"Active:  {age(r['ts'])}")
+    detail.append(f"State:   {st}")
+    if l and l["remote"]:
+        detail.append(f"Remote:  {l['remote']}")
+    if g and g.get("isArchived"):
+        detail.append("Archived on GitHub")
+    if desc:
+        detail += ["", desc]
+    return cells, detail
+
+
+def main():
+    n = 10
+    args = sys.argv[1:]
+    if "-n" in args:
+        n = int(args[args.index("-n") + 1])
+    repos, gh_ok = collect()
+    repos = [r for r in repos if not (r["gh"] or {}).get("isArchived")][:n]
+    rows = [row(r) for r in repos]
+
+    w = [max(len(c[i]) for c, _ in rows) for i in range(5)] if rows else [0] * 5
+    lines = []
+    for r, (cells, detail) in zip(repos, rows):
+        text = "  ".join(cells[i].ljust(w[i]) for i in range(5)) + "  " + cells[5]
+        lines.append(f"{r['name']}\t{text}\t{SEP.join(detail)}")
+    home = f"~\t{'~ (home: system/account work)'}\t~{SEP}{SEP}Path:    {HOME}{SEP}Machine- and account-level work"
+    lines.insert(0, home)
+
+    if not gh_ok:
+        print("note: GitHub unavailable, showing local repos only", file=sys.stderr)
+    if "--list" in args:
+        for ln in lines:
+            print(ln.split("\t")[1])
+        return
+
+    fzf = subprocess.run(
+        ["fzf", "--delimiter", "\t", "--with-nth", "2", "--height", "100%",
+         "--layout", "reverse", "--prompt", "repo> ", "--header",
+         "enter: launch claude   esc: cancel",
+         "--preview", f"echo {{3}} | tr '{SEP}' '\\n'", "--preview-window", "right,45%,wrap"],
+        input="\n".join(lines), capture_output=False, stdout=subprocess.PIPE,
+        text=True)
+    pick = fzf.stdout.strip().split("\t")[0] if fzf.returncode == 0 else ""
+    if not pick:
+        return
+    if pick == "~":
+        target = HOME
+    else:
+        r = next(x for x in repos if x["name"] == pick)
+        if r["local"]:
+            target = r["local"]["path"]
+        else:
+            target = os.path.join(GH_DIR, pick)
+            ans = input(f"Clone {GH_OWNER}/{pick} to {target}? [y/N] ").strip().lower()
+            if ans != "y":
+                return
+            if subprocess.run(["gh", "repo", "clone", f"{GH_OWNER}/{pick}", target]).returncode:
+                sys.exit("clone failed")
+    os.chdir(target)
+    os.execvp("claude", ["claude"])
+
+
+if __name__ == "__main__":
+    main()
