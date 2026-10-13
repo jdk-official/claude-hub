@@ -5,3 +5,4 @@ Terminal launcher: lists recent repos (GitHub + local), previews their state, an
 
 - Script: `bin/hub` (Python 3 + fzf + gh + git), symlinked to `~/.local/bin/hub`
 - Requirements brainstorm: `docs/requirements-brainstorm.md`
+- Workspace vault: [docs/INDEX.md](docs/INDEX.md) (handover, router, ADRs, tracking)

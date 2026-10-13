@@ -28,7 +28,7 @@ Ghostty window and start or resume a Claude session there, so that I never type 
 
 | ID | Requirement | Acceptance check |
 |----|-------------|------------------|
-| S1 | When a repo is highlighted, the preview shall show last 3 commits (subject + age) and the first ~10 lines of `HANDOVER.md`, else `README.md`. | Highlight a repo with HANDOVER.md: its first lines show; one without shows README. |
+| S1 | When a repo is highlighted, the preview shall show last 3 commits (subject + age) and the first ~10 lines of `HANDOVER.md`, else the repo README. | Highlight a repo with HANDOVER.md: its first lines show; one without shows README. |
 | S2 | When the preview pane renders, the system shall word-wrap description and paths to the pane width (never clip). | Resize to 50, 80, 120 columns: no line exceeds pane width, no text lost. |
 | S3 | When the user presses a resume key (proposed `ctrl-r`), the system shall exec `claude --continue`; plain Enter starts a new session. | `ctrl-r` in a repo with a prior session reopens it; Enter opens a blank one. |
 | S4 | When the user presses `ctrl-o`, the system shall open the repo's GitHub page in the browser (`gh browse`); `ctrl-s` shall open a plain `$SHELL` in the repo. | Each key does only its action; hub exits afterwards. |
