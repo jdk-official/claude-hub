@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""hub: pick a recent repo (GitHub + local) and launch claude in it.
+"""claude-hub: pick a recent repo (GitHub + local) and launch claude in it.
 
-Usage: hub [-n COUNT] [--list]
-       hub stats                     12-week contribution heatmap
-       hub --refresh                 refresh the GitHub cache (run in the background by hub)
-       hub --preview PATH SLUG NAME  render the preview pane (called by fzf)
+Usage: claude-hub [-n COUNT] [--list]
+       claude-hub stats                     12-week contribution heatmap
+       claude-hub --refresh                 refresh the GitHub cache (run in the background by claude-hub)
+       claude-hub --preview PATH SLUG NAME  render the preview pane (called by fzf)
 
 Stdlib only. Needs fzf, git and claude; gh is optional (local repos only without it).
-Cache: ~/.cache/hub/repos.json. Config: ~/.config/hub/config (TOML, optional).
+Cache: ~/.cache/claude-hub/repos.json. Config: ~/.config/claude-hub/config (TOML, optional).
 """
 import sys
 
 if sys.version_info < (3, 11):
-    sys.exit("hub: Python 3.11 or newer is required (found %d.%d)" % sys.version_info[:2])
+    sys.exit("claude-hub: Python 3.11 or newer is required (found %d.%d)" % sys.version_info[:2])
 
 import fcntl
 import json
@@ -29,10 +29,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
 HOME = os.path.expanduser("~")
-CLONE_ROOT = os.environ.get("HUB_CLONE_ROOT") or "/mnt/data/github"
-CACHE_DIR = os.environ.get("HUB_CACHE_DIR") or os.path.join(
-    os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, ".cache"), "hub")
-CONFIG_PATH = os.environ.get("HUB_CONFIG") or os.path.join(HOME, ".config", "hub", "config")
+CLONE_ROOT = os.environ.get("CLAUDE_HUB_CLONE_ROOT") or "/mnt/data/github"
+CACHE_DIR = os.environ.get("CLAUDE_HUB_CACHE_DIR") or os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, ".cache"), "claude-hub")
+CONFIG_PATH = os.environ.get("CLAUDE_HUB_CONFIG") or os.path.join(HOME, ".config", "claude-hub", "config")
 STALE_SECS = 24 * 3600
 GIT_TIMEOUT = 3
 GH_TIMEOUT = 20
@@ -124,7 +124,7 @@ def require_tools(needed):
     missing = missing_tools(needed)
     if missing:
         t = missing[0]
-        sys.stderr.write(f"hub: {t} not found on PATH. Install: {INSTALL_HINT.get(t, 'install ' + t)}\n")
+        sys.stderr.write(f"claude-hub: {t} not found on PATH. Install: {INSTALL_HINT.get(t, 'install ' + t)}\n")
         sys.exit(127)
 
 
@@ -313,7 +313,7 @@ def refresh_lock():
 
 
 def spawn_refresh():
-    """Start a detached `hub --refresh` unless one started in the last minute."""
+    """Start a detached `claude-hub --refresh` unless one started in the last minute."""
     try:
         ensure_cache_dir()
         lock = refresh_lock()
@@ -926,20 +926,20 @@ def github_reachable():
 def clone_repo(slug, name):
     """Ask, then clone into CLONE_ROOT/<name>. Return the path, or exit leaving nothing behind."""
     if not name or "/" in name or name in (".", "..") or CONTROL_RE.search(name):
-        sys.exit(f"hub: refusing to clone into an unsafe name: {name!r}")
+        sys.exit(f"claude-hub: refusing to clone into an unsafe name: {name!r}")
     target = os.path.join(CLONE_ROOT, name)
     if os.path.exists(target):
         return target
     if not shutil.which("gh"):
-        sys.exit("hub: gh is not installed, cannot clone " + slug)
+        sys.exit("claude-hub: gh is not installed, cannot clone " + slug)
     if (load_cache().get("gh") or {}).get("ok") is False and not github_reachable():
-        sys.exit(f"hub: GitHub is unreachable, cannot clone {slug} now. Nothing was changed.")
+        sys.exit(f"claude-hub: GitHub is unreachable, cannot clone {slug} now. Nothing was changed.")
     try:
         ans = input(f"Clone {slug} to {target}? [y/N] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         ans = ""
     if ans != "y":
-        sys.exit("hub: not cloned")
+        sys.exit("claude-hub: not cloned")
     if os.path.exists(target):  # appeared while the prompt was open (another session): never touch it
         return target
     rc = subprocess.run(["gh", "repo", "clone", slug, target]).returncode
@@ -947,7 +947,7 @@ def clone_repo(slug, name):
         # target was verified absent immediately before the clone, so anything there is a partial of ours
         if os.path.isdir(target):
             shutil.rmtree(target, ignore_errors=True)
-        sys.exit(f"hub: clone of {slug} failed (GitHub unreachable or no access); nothing was left on disk")
+        sys.exit(f"claude-hub: clone of {slug} failed (GitHub unreachable or no access); nothing was left on disk")
     return target
 
 
@@ -969,7 +969,7 @@ def stats_header(cache, today=None):
 
 
 def tag_state_file():
-    return os.environ.get("HUB_TAG_STATE") or os.path.join(CACHE_DIR, "tag.state")
+    return os.environ.get("CLAUDE_HUB_TAG_STATE") or os.path.join(CACHE_DIR, "tag.state")
 
 
 def all_tags(cfg):
@@ -1113,7 +1113,7 @@ def make_session_dir():
     for base in (os.environ.get("XDG_RUNTIME_DIR"), tempfile.gettempdir()):
         if base and os.path.isdir(base):
             try:
-                d = tempfile.mkdtemp(prefix="hub-", dir=base)
+                d = tempfile.mkdtemp(prefix="claude-hub-", dir=base)
                 if len(os.path.join(d, "fzf.sock").encode()) < 100:
                     return d
                 shutil.rmtree(d, ignore_errors=True)
@@ -1163,7 +1163,7 @@ def main(argv):
             if n < 1:
                 raise ValueError
         except (ValueError, IndexError):
-            sys.exit("hub: -n needs a positive number")
+            sys.exit("claude-hub: -n needs a positive number")
     list_only = "--list" in args
     require_tools(["git"] if list_only else ["git", "fzf", "claude"])
     cache, entries = gather(cfg)
@@ -1176,7 +1176,7 @@ def main(argv):
         return 0
     missing = fzf_missing_features()
     if missing:
-        sys.exit(f"hub: this fzf is too old (missing {', '.join(missing)}). Upgrade: sudo pacman -S fzf")
+        sys.exit(f"claude-hub: this fzf is too old (missing {', '.join(missing)}). Upgrade: sudo pacman -S fzf")
     seen = cache_mtime()
     spawn_refresh()
     sess = make_session_dir()
@@ -1189,8 +1189,8 @@ def main(argv):
                 "--preview-window", PREVIEW_WINDOW]
     if live:
         sock = os.path.join(sess, "fzf.sock")
-        env["HUB_TAG_STATE"] = os.path.join(sess, "tag.state")
-        os.environ["HUB_TAG_STATE"] = env["HUB_TAG_STATE"]   # so header_lines sees the same state
+        env["CLAUDE_HUB_TAG_STATE"] = os.path.join(sess, "tag.state")
+        os.environ["CLAUDE_HUB_TAG_STATE"] = env["CLAUDE_HUB_TAG_STATE"]   # so header_lines sees the same state
         argv_fzf += [
             "--footer", FOOTER, "--listen", sock, "--track", "--id-nth", "1",
             # ctrl-r returns at once (the refresh runs detached and the watcher reloads when it finishes).
@@ -1212,7 +1212,7 @@ def main(argv):
             shutil.rmtree(sess, ignore_errors=True)
     rc = proc.returncode
     if rc not in (0, 1, 130):
-        sys.stderr.write(f"hub: fzf failed (exit {rc})\n")
+        sys.stderr.write(f"claude-hub: fzf failed (exit {rc})\n")
         return rc
     if rc != 0:
         return 0

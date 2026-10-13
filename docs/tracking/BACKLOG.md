@@ -1,14 +1,14 @@
 # Backlog
 
 Not-yet-started work, grouped. Promote an item to [ACTIVE.md](ACTIVE.md) when it starts.
-Requirement IDs refer to the [PRD](../prd/hub.md). Status: iteration 1 (P1-P11 plus Q2) and iteration 2 (Q1, Q3-Q6) built on 2026-10-13.
+Requirement IDs refer to the [PRD](../prd/claude-hub.md). Status: iteration 1 (P1-P11 plus Q2) and iteration 2 (Q1, Q3-Q6) built on 2026-10-13.
 
 ## Done: iteration 1 (foundation, stats, content)
 
 | ID | Item | Covers | Depends on |
 |---|---|---|---|
 | P1 | Missing-tool and Python-version checks, no tracebacks | FR-7, FR-8, AC-8 | none |
-| P2 | Cache layer in `~/.cache/hub`, stale marker, corrupt recovery, offline fallback | FR-1, FR-4, FR-5, FR-6, AC-1, AC-7, AC-9 | P1 |
+| P2 | Cache layer in `~/.cache/claude-hub`, stale marker, corrupt recovery, offline fallback | FR-1, FR-4, FR-5, FR-6, AC-1, AC-7, AC-9 | P1 |
 | P3 | TOML config: owners, scan roots, pinned, hidden, tags, count | FR-13, FR-14, AC-17, AC-18 | P2 |
 | P4 | Scan roots, de-dup by remote URL, non-git directories | FR-9, FR-12, AC-23 | P3 |
 | P5 | Needs-attention ordering and row markers | FR-16, FR-36, AC-20, AC-27 | P3 |
@@ -17,7 +17,7 @@ Requirement IDs refer to the [PRD](../prd/hub.md). Status: iteration 1 (P1-P11 p
 | P8 | Launch: new vs resume (ctrl-l), clone confirm, clean abort, offline refusal | FR-23 to FR-27, AC-3 to AC-5, AC-21 | P1 |
 | P9 | Stats engine: identity rules, active days, streak, today/week vs average | FR-28, FR-29, FR-32, FR-33, AC-10 to AC-12 | P4 |
 | P10 | Per-repo 8-week sparkline | FR-30, AC-13, AC-14 | P9 |
-| P11 | `hub stats` 12-week heatmap | FR-31, AC-15, AC-16 | P9 |
+| P11 | `claude-hub stats` 12-week heatmap | FR-31, AC-15, AC-16 | P9 |
 
 ## Done: iteration 2 (fzf-driven UI), built 2026-10-13
 
@@ -42,13 +42,13 @@ Iteration 1 also delivered: scrolling over the full list (up to 100 rows), part 
   background single-instance Ghostty (`--initial-window=false`, quick terminal, a Codex window) `initial-command`
   only fires for the first surface when the app starts, so `ghostty` did nothing. The shell block runs for every
   new interactive Ghostty shell, so it fires for windows opened into the running instance.
-- The block: runs `hub` when `TERM_PROGRAM=ghostty`, `HUB_STARTED` is unset and `HUB_AUTOSTART` is not `0`; it
-  exports `HUB_STARTED` so nested shells skip it. Esc leaves you at the prompt in the same shell, so Ghostty's
+- The block: runs `claude-hub` when `TERM_PROGRAM=ghostty`, `CLAUDE_HUB_STARTED` is unset and `CLAUDE_HUB_AUTOSTART` is not `0`; it
+  exports `CLAUDE_HUB_STARTED` so nested shells skip it. Esc leaves you at the prompt in the same shell, so Ghostty's
   shell integration is kept.
-- Verified: `ghostty +new-window` into the running instance opened hub; closing that window left the instance and
+- Verified: `ghostty +new-window` into the running instance opened claude-hub; closing that window left the instance and
   other windows alone. Commands run with `-e` (codex, claude keybind, btop) bypass the shell and are unaffected.
 - Behaviour to know: new tabs and splits are new shells, so they also open the picker; esc dismisses it. Disable
-  everywhere with `HUB_AUTOSTART=0` (add `export HUB_AUTOSTART=0` to the shell, or delete the block).
+  everywhere with `CLAUDE_HUB_AUTOSTART=0` (add `export CLAUDE_HUB_AUTOSTART=0` to the shell, or delete the block).
 - To revert: remove the block from `~/.bashrc` (backups: `~/.bashrc.bak-<timestamp>`).
 
 ## Later

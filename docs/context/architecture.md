@@ -10,4 +10,4 @@ One script, three stages:
 3. **Launch** — `cd` into the repo (cloning GitHub-only repos first, after a y/N prompt) and `exec claude`.
 
 Planned: cache plus background refresh, git-stats header (streak, today/week), per-repo sparkline,
-`hub stats` heatmap. See [requirements-brainstorm.md](../requirements-brainstorm.md).
+`claude-hub stats` heatmap. See [requirements-brainstorm.md](../requirements-brainstorm.md).

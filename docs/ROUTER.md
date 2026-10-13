@@ -1,4 +1,4 @@
-# hub — task router
+# claude-hub — task router
 
 Load only what the task needs — not the whole workspace. Find your task below,
 load the listed notes, then do the work. Capture what you learned at the end.
