@@ -98,6 +98,24 @@ Prompted by: "make it clearer whether something is in GitHub, local or other".
   pane; headless uses a single-width glyph (`◈`) because `⚙` rendered double-width.
 - Not done from the brainstorm: colour by source, section dividers, a per-row footer ("enter: clone" vs "open").
 
+## Done: UX review round, built 2026-10-14
+
+Prompted by "review the user experience" plus a source-backed check of how Claude's resume and background
+sessions behave.
+
+- Worktrees collapsed under their parent (`⎇N`, header note, `ctrl-w`, `show_worktrees`); stops two projects
+  from taking most of the list.
+- List-first layout: preview 38% beside the list, stacked below until ~121 columns, so the origin is visible.
+- Header: tab bar first, one short stats line; the detailed stats stay on the dashboard.
+- Ages in minutes and hours; wrong "see next launch" copy fixed; `alt-h` help with both glyph keys.
+- `ctrl-l` resumes a specific session by id (never `--continue`, which refuses when the latest conversation is
+  running in the background); the preview names the target.
+- Sessions read from `claude agents --json --all` (documented), registry as enrichment; `claude rm` for idle
+  background sessions.
+- Auto-launch only when a shell starts in the home directory (`CLAUDE_HUB_AUTOSTART=always|0` to change).
+- Stale `claude()` wrapper removed from `~/.bashrc` (its mod directory no longer exists; the feature is a plugin).
+- Not done: colour by source, per-row footer, abbreviating the header further for ~50-column windows.
+
 ## Later
 
 - Deferred gamification: ship counter, badges and milestones, weekly goal, finish-line nudge.

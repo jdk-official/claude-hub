@@ -43,7 +43,7 @@ EXCERPT_LINES = 10
 MAX_ROWS = 100
 # fzf's <N threshold applies to the preview pane's own width (45% of the terminal), so <45 means a
 # terminal narrower than 100 columns: the preview then moves below the list (FR-21/FR-22).
-PREVIEW_WINDOW = "right,45%,wrap,<45(down,40%,wrap)"
+PREVIEW_WINDOW = "right,38%,wrap,<46(down,40%,wrap)"
 STATS_DAYS = 400
 STATS_TTL = 300
 BULK_LINES = 5000   # a single commit above this is a bulk import (vendored code, generated files)
@@ -62,6 +62,7 @@ DEFAULT_CONFIG = {
     "tags": {},
     "count": 10,
     "start_tab": "all",
+    "show_worktrees": False,
 }
 
 # Never let a repo's own config run code: the scan walks untrusted scratch dirs.
@@ -100,9 +101,14 @@ def age(ts, now=None):
     if not ts:
         return "never"
     now = now or time.time()
-    d = int((now - ts) // 86400)
-    if d < 1:
-        return "today"
+    secs = max(0, now - ts)
+    if secs < 90:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs // 60)}m ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)}h ago"
+    d = int(secs // 86400)
     if d < 14:
         return f"{d}d ago"
     if d < 90:
@@ -163,6 +169,11 @@ def load_config(path=None):
                            for k, tl in v.items()}
         else:
             warn.append("tags")
+    if "show_worktrees" in data:
+        if isinstance(data["show_worktrees"], bool):
+            cfg["show_worktrees"] = data["show_worktrees"]
+        else:
+            warn.append("show_worktrees")
     if "start_tab" in data:
         v = data["start_tab"]
         if isinstance(v, str) and v.lower() in TABS:
@@ -614,7 +625,41 @@ def in_tab(e, cfg, tab):
     return False
 
 
+def wt_state_file():
+    return os.environ.get("CLAUDE_HUB_WT_STATE") or os.path.join(CACHE_DIR, "wt.state")
+
+
+def worktrees_shown(cfg):
+    try:
+        with open(wt_state_file()) as f:
+            v = f.read().strip()
+        if v in ("show", "hide"):
+            return v == "show"
+    except OSError:
+        pass
+    return bool(cfg.get("show_worktrees"))
+
+
+def toggle_worktrees(cfg):
+    new = "hide" if worktrees_shown(cfg) else "show"
+    try:
+        os.makedirs(os.path.dirname(wt_state_file()), exist_ok=True)
+        with open(wt_state_file(), "w") as f:
+            f.write(new)
+    except OSError:
+        pass
+    return new == "show"
+
+
+def shown_entries(entries, cfg):
+    """Entries the list actually displays: worktrees are collapsed under their parent unless expanded."""
+    if worktrees_shown(cfg):
+        return list(entries)
+    return [e for e in entries if not e.get("parent")]
+
+
 def tab_counts(entries, cfg, sessions_n=None):
+    entries = shown_entries(entries, cfg)
     c = {tab: sum(1 for e in entries if in_tab(e, cfg, tab)) for tab in TABS if tab != "sessions"}
     c["sessions"] = len(live_sessions()) if sessions_n is None else sessions_n
     return c
@@ -630,7 +675,7 @@ def tab_bar(entries, cfg, current, sessions_n=None):
 
 
 STATE_MAX = 26
-NAME_MAX = 40
+NAME_MAX = 36
 
 
 def short(text, n=STATE_MAX):
@@ -755,10 +800,10 @@ def dashboard_text(width=60, today=None):
     cache = load_cache()
     s = cache.get("stats")
     if not s:
-        return "~ dashboard\n\nstats: computing (first refresh), see next launch"
+        return "~ dashboard\n\n" + STATS_COMPUTING
     today = today or date.today()
     out = ["~ dashboard", ""]
-    out.extend(stats_header(cache, today))
+    out.extend(stats_lines_compact(cache, today))
     out.append("")
     out.append("last 12 weeks (local clones, authored commits)")
     out.extend(heatmap(s.get("days", {}), today, color=True))
@@ -826,6 +871,10 @@ def preview_work_here(path, width):
         for s in sess[:6]:
             where = (" " + s["tty"].replace("/dev/", "")) if s["tty"] else ""
             out.append(wrap(f"  {SESSION_GLYPH[s['state']]} {s['state']} · {s['name']}{where}", width))
+    kind, _ident, s = resolve_resume(path)
+    if kind != "new":
+        verb = "attaches to" if kind == "attach" else "resumes"
+        out += ["", wrap(f"ctrl-l {verb}: {s['name']} ({age(s['updated'])})", width)]
     wts = git(["worktree", "list", "--porcelain"], path)
     paths = [l[9:] for l in wts.splitlines() if l.startswith("worktree ")]
     others = [w for w in paths if os.path.realpath(w) != real]
@@ -1079,7 +1128,7 @@ def heatmap(days, today, weeks=12, color=False):
             cells.append(" " if d > today else cell(level(counts[w * 7 + r])))
         lines.append(f"{names[r]}  " + " ".join(cells))
     scale = " ".join(cell(i) for i in range(5))
-    lines.append(f"      less {scale} more   weeks start {start.isoformat()}")
+    lines.append(f"      less {scale} more  (from {start.strftime('%m-%d')})")
     return lines
 
 
@@ -1206,6 +1255,64 @@ def find_transcripts():
     return found
 
 
+_AGENTS_MEMO = [0.0, []]
+
+
+def fetch_agents(ttl=2.0):
+    """Sessions from `claude agents --json --all`, which Claude documents as the supported way to read session
+    state from outside. Fast (about 0.1 s), memoised briefly, and empty if unavailable. CLAUDE_HUB_NO_AGENTS=1
+    switches it off (tests use this so a fake claude is never asked to list sessions)."""
+    if os.environ.get("CLAUDE_HUB_NO_AGENTS") or not shutil.which("claude"):
+        return []
+    now = time.time()
+    if now - _AGENTS_MEMO[0] < ttl:
+        return _AGENTS_MEMO[1]
+    rc, out, _ = run(["claude", "agents", "--json", "--all"], timeout=6)
+    data = []
+    if rc == 0:
+        try:
+            parsed = json.loads(out)
+            data = [d for d in parsed if isinstance(d, dict) and d.get("sessionId")] if isinstance(parsed, list) else []
+        except ValueError:
+            data = []
+    _AGENTS_MEMO[0], _AGENTS_MEMO[1] = now, data
+    return data
+
+
+def _to_int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def merge_agents(entries, agents):
+    """Registry entries stay the base (they know terminals and parking). The supported listing adds any running
+    session the registry misses and supplies the fresher display name."""
+    by_sid = {a["sessionId"]: a for a in agents}
+    merged = []
+    for e in entries:
+        a = by_sid.get(e["sessionId"])
+        if a and a.get("name"):
+            e = dict(e, name=a["name"])
+        merged.append(e)
+    known = {e["sessionId"] for e in entries}
+    for a in agents:
+        pid = _to_int(a.get("pid"))
+        if a["sessionId"] in known or not pid:
+            continue      # no process: it is a past session, which the transcripts cover
+        merged.append({"pid": pid, "sessionId": a["sessionId"], "cwd": a.get("cwd") or "",
+                       "kind": "bg" if a.get("kind") == "background" else "interactive",
+                       "status": a.get("status") or "", "name": a.get("name") or a.get("id") or a["sessionId"][:8],
+                       "jobId": a.get("id") or "", "startedAt": _to_int(a.get("startedAt")), "entrypoint": "cli",
+                       "_file": ""})
+    return merged
+
+
+def current_sessions(now=None):
+    return classify_live(merge_agents(read_registry(), fetch_agents()), now)
+
+
 def classify_live(entries, now=None):
     """Turn registry entries into session dicts with a state; spare (pre-warmed) entries are hidden."""
     now = now or time.time()
@@ -1243,7 +1350,7 @@ def classify_live(entries, now=None):
 
 def load_sessions(limit_past=PAST_LIMIT, now=None):
     """All sessions worth showing: live ones first (by state), then the most recent past sessions."""
-    entries = read_registry()
+    entries = merge_agents(read_registry(), fetch_agents())
     live = classify_live(entries, now)
     live_ids = {s["sid"] for s in live} | {e["sessionId"] for e in entries}   # includes hidden spares
     transcripts = find_transcripts()
@@ -1263,11 +1370,11 @@ def load_sessions(limit_past=PAST_LIMIT, now=None):
 def session_counts():
     """Cheap summary for the header: live states from the registry plus the number of past transcripts."""
     c = {}
-    live = classify_live(read_registry())
+    live = current_sessions()
     for s in live:
         c[s["state"]] = c.get(s["state"], 0) + 1
     ids = {s["sid"] for s in live}
-    ids |= {e["sessionId"] for e in read_registry()}
+    ids |= {e["sessionId"] for e in merge_agents(read_registry(), fetch_agents())}
     c["past"] = sum(1 for sid in find_transcripts() if sid not in ids)
     return c
 
@@ -1379,8 +1486,11 @@ def session_stop(slug):
         return 0
     parts = (slug.split(":") + [""] * 5)[:5]
     state, job, pid, sid = parts[1], parts[2], int(parts[3] or 0), parts[4]
-    entry = next((s for s in classify_live(read_registry()) if s["sid"] == sid), None)
-    if state in ("working", "attached", "detached") and job:
+    entry = next((s for s in current_sessions() if s["sid"] == sid), None)
+    if state == "detached" and job:
+        what = f"remove idle background session {job} from the list (its transcript is kept)"
+        action = lambda: subprocess.run(["claude", "rm", job]).returncode == 0
+    elif state in ("working", "attached") and job:
         what = f"stop background session {job}"
         action = lambda: subprocess.run(["claude", "stop", job]).returncode == 0
     elif state == "orphan" and entry and entry["pid"] == pid:
@@ -1466,14 +1576,9 @@ def toggle_mode():
 # --- P8: launch -------------------------------------------------------------
 
 def claude_argv(resume=False, home=None):
-    """Same flags the user's `claude` shell function adds: the project-dashboard mod, if installed."""
-    mod = os.path.join(home or HOME, ".claude", "mods", "project-dashboard")
-    argv = ["claude"]
-    if os.path.isdir(mod):
-        argv += ["--plugin-dir", mod]
-    if resume:
-        argv.append("--continue")
-    return argv
+    """Arguments for a plain claude start. (The project-dashboard mod is an enabled plugin now, so no
+    --plugin-dir is added; `home` is kept for callers.)"""
+    return ["claude"] + (["--continue"] if resume else [])
 
 
 def launch(target, resume=False):
@@ -1485,6 +1590,37 @@ def launch(target, resume=False):
 def github_reachable():
     rc, _, _ = run(["gh", "api", "rate_limit", "--silent"], timeout=6)
     return rc == 0
+
+
+def resolve_resume(path, sessions=None):
+    """What ctrl-l should do for a project: ('attach', job, s) a background session, ('resume', sid, s) the most
+    recent past one, or ('new', None, None). Sessions open in another terminal, headless, orphaned or stale are
+    skipped. `claude --continue` is not used: it refuses when the latest conversation is running in the
+    background, and only guesses by directory."""
+    sessions = load_sessions() if sessions is None else sessions
+    real = os.path.realpath(path)
+    here = [s for s in sessions if s["cwd"] and under(os.path.realpath(s["cwd"]), real)]
+    for s in sorted(here, key=lambda s: -s["updated"]):
+        if s["state"] in ("working", "attached", "detached") and s["job"]:
+            return ("attach", s["job"], s)
+        if s["state"] == "past":
+            return ("resume", s["sid"], s)
+    return ("new", None, None)
+
+
+def continue_last(path):
+    kind, ident, s = resolve_resume(path)
+    if kind == "attach":
+        sys.stderr.write(f"claude-hub: attaching to '{s['name']}' (background, {age(s['updated'])})\n")
+        os.execvp("claude", ["claude", "attach", ident])
+        return
+    os.chdir(path)
+    if kind == "resume":
+        sys.stderr.write(f"claude-hub: continuing '{s['name']}' ({age(s['updated'])})\n")
+        os.execvp("claude", claude_argv(False) + ["--resume", ident])
+        return
+    sys.stderr.write("claude-hub: no earlier session in this project; starting a new one\n")
+    os.execvp("claude", claude_argv(False))
 
 
 def open_session(slug, cwd):
@@ -1539,10 +1675,49 @@ def clone_repo(slug, name):
 
 # --- main -------------------------------------------------------------------
 
+STATS_COMPUTING = "stats: computing… this fills in by itself in a few seconds"
+
+
+def stats_header_short(cache, today=None):
+    """One line for the header; the full figures are on the home dashboard and in `claude-hub stats`."""
+    s = cache.get("stats")
+    if not s:
+        return STATS_COMPUTING
+    today = today or date.today()
+    days = s.get("days", {})
+    cur, _best = streaks(active_dates(days), today)
+    t = period_totals(days, today, today)
+    w = period_totals(days, monday(today), today)
+    tb, wb = sum(period_bulk(days, today, today)), sum(period_bulk(days, monday(today), today))
+    note = " · partial" if s.get("partial") else ""
+    return (f"streak {cur}d · today {t[0]}c +{kfmt(t[2])}/-{kfmt(t[3])}{f' (+{kfmt(tb)} bulk)' if tb else ''}"
+            f" · week {w[0]}c +{kfmt(w[2])}/-{kfmt(w[3])}{f' (+{kfmt(wb)} bulk)' if wb else ''}{note}")
+
+
+def stats_lines_compact(cache, today=None):
+    """The dashboard's figures as short lines (each fits a ~46 column preview)."""
+    s = cache.get("stats")
+    if not s:
+        return [STATS_COMPUTING]
+    today = today or date.today()
+    days = s.get("days", {})
+    cur, best = streaks(active_dates(days), today)
+    t = period_totals(days, today, today)
+    w = period_totals(days, monday(today), today)
+    tb, wb = sum(period_bulk(days, today, today)), sum(period_bulk(days, monday(today), today))
+    out = [f"streak {cur}d  (best {best}d)",
+           f"today {t[0]}c {t[1]}r +{kfmt(t[2])}/-{kfmt(t[3])}" + (f"  (+{kfmt(tb)} bulk)" if tb else ""),
+           f"week  {w[0]}c {w[1]}r +{kfmt(w[2])}/-{kfmt(w[3])}" + (f"  (+{kfmt(wb)} bulk)" if wb else ""),
+           f"avg {avg_weekly_commits(days, today):.0f} commits/week"]
+    if s.get("partial"):
+        out.append(f"partial: {s['partial']} repos timed out")
+    return out
+
+
 def stats_header(cache, today=None):
     s = cache.get("stats")
     if not s:
-        return ["stats: computing (first refresh), see next launch"]
+        return [STATS_COMPUTING]
     today = today or date.today()
     days = s.get("days", {})
     cur, best = streaks(active_dates(days), today)
@@ -1597,23 +1772,27 @@ def repo_tags(e, cfg):
 
 
 def header_lines(cache, cfg, warn, gh_present, entries=None):
+    """Tab bar first (it is what you act on), then one short stats line; detail lives in the dashboard preview."""
     if entries is None:
         entries = gather(cfg)[1]
-    lines = list(stats_header(cache))
-    lines.append(gh_status_line(cache, gh_present))
-    lines.append(sessions_summary())
+    tab = current_tab()
+    lines = [tab_bar(entries, cfg, tab), stats_header_short(cache), gh_status_line(cache, gh_present)]
     tag = current_tag()
     if tag:
         lines.append(f"tag filter: #{tag}  (ctrl-t cycles tags)")
     if warn:
         lines.append(warn)
-    if current_tab() == "sessions":
+    hidden = 0 if worktrees_shown(cfg) else sum(1 for e in entries if e.get("parent"))
+    if hidden and tab != "sessions":
+        lines.append(f"{hidden} worktrees collapsed under their projects · ctrl-w shows them")
+    if tab == "sessions":
+        lines.append(sessions_summary())
         lines.extend(session_legend_lines())
-    lines.append(tab_bar(entries, cfg, current_tab()))
     return lines
 
 
-FOOTER = "enter open · ctrl-l resume · ctrl-r refresh · ctrl-t tags\nctrl-s/alt-s next/prev tab · alt-1..5 jump · ctrl-x stop · esc quit"
+FOOTER = ("enter open · ctrl-l continue · ctrl-r refresh · ctrl-t tags · ctrl-w worktrees\n"
+          "ctrl-s/alt-s tabs · alt-1..5 jump · alt-h help · ctrl-x stop · esc quit")
 
 
 def under(path, base):
@@ -1622,7 +1801,7 @@ def under(path, base):
 
 
 def live_sessions():
-    return [s for s in classify_live(read_registry()) if s["state"] != "stale"]
+    return [s for s in current_sessions() if s["state"] != "stale"]
 
 
 def attach_session_badges(entries, sessions=None):
@@ -1659,6 +1838,7 @@ def fzf_lines(entries, cfg, cache, tag="", tab="all"):
     """Tab fields: 1 id (identity across reloads), 2 name, 3 tags, 4 columns, 5 path, 6 slug, 7 name.
     fzf displays fields 2-4 and searches fields 2-3 only (name and tags), so a query never matches
     the age, branch or marker text."""
+    entries = shown_entries(entries, cfg)
     if tab != "all":
         entries = [e for e in entries if in_tab(e, cfg, tab)]
     if tag:
@@ -1683,6 +1863,36 @@ def fzf_lines(entries, cfg, cache, tag="", tab="all"):
                                e["path"], e["slug"], e["name"]]))
     return lines
 
+
+HELP_TEXT = """claude-hub keys
+ enter     open / attach / resume
+ ctrl-l    continue last session
+ ctrl-s    next tab    alt-s previous
+ alt-1..5  jump to a tab
+ ctrl-t    cycle tag filter
+ ctrl-w    show / hide worktrees
+ ctrl-r    refresh GitHub + stats
+ ctrl-x    stop / clean up (asks first)
+ alt-h     this help      esc  quit
+
+Where a project lives
+ ◆ local + GitHub    ⌂ local only
+ ◌ GitHub only       ◇ someone else's
+ ▫ plain folder      ↳ worktree
+ origin: gh:<owner> · local · dir:<folder>
+
+Markers
+ ★ pinned   ●N dirty   ↑N unpushed
+ ⎇N worktrees   ▶N sessions   ⚠N orphan
+ PRN open PRs
+
+Sessions
+ """ + session_legend_lines()[0] + """
+ """ + session_legend_lines()[1] + """
+ attached: open in a terminal
+ detached: running, nobody viewing
+ headless: claude -p / SDK
+ orphan: interactive, terminal gone"""
 
 EMPTY_ID = "~empty"
 
@@ -1789,6 +1999,12 @@ def main(argv):
     if "--tab" in args:           # ctrl-s / alt-s / alt-1..5
         step_tab(args[args.index("--tab") + 1])
         return 0
+    if "--toggle-worktrees" in args:   # ctrl-w
+        toggle_worktrees(cfg)
+        return 0
+    if "--help-text" in args:          # alt-h
+        print(HELP_TEXT)
+        return 0
     if "--toggle-mode" in args:
         toggle_mode()
         return 0
@@ -1871,6 +2087,8 @@ def main(argv):
                 "--preview-window", PREVIEW_WINDOW]
     if live:
         sock = os.path.join(sess, "fzf.sock")
+        env["CLAUDE_HUB_WT_STATE"] = os.path.join(sess, "wt.state")
+        os.environ["CLAUDE_HUB_WT_STATE"] = env["CLAUDE_HUB_WT_STATE"]
         env["CLAUDE_HUB_TAG_STATE"] = os.path.join(sess, "tag.state")
         os.environ["CLAUDE_HUB_TAG_STATE"] = env["CLAUDE_HUB_TAG_STATE"]   # so header_lines sees the same state
         argv_fzf += [
@@ -1881,6 +2099,8 @@ def main(argv):
             # Header updates go BEFORE reload: under --track fzf drops actions queued after a reload.
             "--bind", f"ctrl-r:change-prompt(refreshing> )+execute-silent({me} --kick-refresh)",
             "--bind", f"ctrl-t:execute-silent({me} --cycle-tag)+transform-header({me} --header)+reload({me} --lines)",
+            "--bind", f"ctrl-w:execute-silent({me} --toggle-worktrees)+transform-header({me} --header)+reload({me} --lines)",
+            "--bind", f"alt-h:preview({me} --help-text)",
             # tabs: every tab switch updates state first, then prompt, header (before reload) and list
             *[x for key, how in (("ctrl-s", "next"), ("alt-s", "prev"), ("alt-1", "1"), ("alt-2", "2"),
                                  ("alt-3", "3"), ("alt-4", "4"), ("alt-5", "5"))
@@ -1919,10 +2139,11 @@ def main(argv):
         return 0
     resume = key == "ctrl-l"
     if name == "~":
-        launch(HOME, resume)
+        continue_last(HOME) if resume else launch(HOME, False)
+        return 0
     if not path:
         path = clone_repo(slug, f[6])
-    launch(path, resume)
+    continue_last(path) if resume else launch(path, False)
     return 0
 
 

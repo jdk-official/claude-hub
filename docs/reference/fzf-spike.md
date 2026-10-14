@@ -59,4 +59,5 @@ use the same waiting approach and have been stable.
 - **Enter always accepts.** To make a row inert, bind `enter` to a `transform` that prints `ignore` for that row
   and `accept` otherwise.
 - **`alt-<digit>` keys** work as bindings (`alt-1` to `alt-5`), and tmux sends them as `M-1` to `M-5`.
-
+- **`preview(...)` is a one-off extra preview** bound to a key (used for `alt-h` help); the normal preview returns
+  when the cursor moves.

@@ -33,3 +33,8 @@ decisions also get their own record under `adr/` (see [adr/README.md](../adr/REA
 - 2026-10-14: Tabs All/Local/GitHub/Other/Sessions on ctrl-s; Local and GitHub overlap; Sessions last, alt-5 jumps to it.
 - 2026-10-14: Origin labels are gh:<owner>, dir:<name> or local; the folder name is never shown bare.
 - 2026-10-14: An empty list is never passed to fzf (placeholder row), after an end-to-end test found stale rows and blocked input.
+- 2026-10-14: Worktrees collapse under their parent by default; ctrl-w or show_worktrees expands them.
+- 2026-10-14: ctrl-l resumes by session id, never `claude --continue` (it refuses when the latest conversation is
+  running in the background and only guesses by directory).
+- 2026-10-14: `claude agents --json --all` is the primary session source (documented); registry and transcripts enrich it.
+- 2026-10-14: Auto-launch defaults to shells that start in the home directory; the claude() wrapper was removed.

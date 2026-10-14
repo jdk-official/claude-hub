@@ -31,6 +31,9 @@ esac
 """
 
 
+os.environ.setdefault("CLAUDE_HUB_NO_AGENTS", "1")   # never ask a real or fake claude to list sessions
+
+
 def git(args, cwd, env=None):
     e = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
     e.update(env or {})
@@ -87,7 +90,7 @@ class E2E(unittest.TestCase):
     def start(self, cols=150, rows=40, argv=(), extra_env=None):
         env = {"HOME": self.home, "PATH": f"{self.bin}:/usr/bin:/bin", "CLAUDE_HUB_CACHE_DIR": self.cache,
                "CLAUDE_HUB_CONFIG": os.path.join(self.tmp, "config"), "CLAUDE_HUB_CLONE_ROOT": self.clones,
-               "CLAUDE_HUB_E2E_OUT": self.out, "XDG_RUNTIME_DIR": self.run_dir, "CLAUDE_HUB_E2E_REPOS": os.path.join(self.tmp, "gh-repos.json"), "TERM": "xterm-256color", "LANG": "C.UTF-8"}
+               "CLAUDE_HUB_NO_AGENTS": "1", "CLAUDE_HUB_E2E_OUT": self.out, "XDG_RUNTIME_DIR": self.run_dir, "CLAUDE_HUB_E2E_REPOS": os.path.join(self.tmp, "gh-repos.json"), "TERM": "xterm-256color", "LANG": "C.UTF-8"}
         env.update(extra_env or {})
         inner = " ".join(["env"] + [f"{k}={v}" for k, v in env.items()] + [sys.executable, HUB] + list(argv))
         # keep the pane alive after claude-hub exits so its final message can be read
@@ -143,25 +146,47 @@ class E2E(unittest.TestCase):
         self.assertEqual(os.path.realpath(call["cwd"]), os.path.realpath(os.path.join(self.root, "alpha")))
         self.assertEqual(call["args"], "")
 
-    def test_launch_adds_the_dashboard_mod_like_the_shell_function(self):
-        mod = os.path.join(self.home, ".claude", "mods", "project-dashboard")
-        os.makedirs(mod)
+    def test_launch_adds_no_plugin_dir_even_if_an_old_mod_directory_exists(self):
+        os.makedirs(os.path.join(self.home, ".claude", "mods", "project-dashboard"))
         self.start()
         self.ready()
         self.type("alpha")
         self.wait_for(lambda: "alpha readme line" in self.screen(), "alpha preview")
-        self.key("C-l")
-        self.assertEqual(self.claude_call()["args"], f"--plugin-dir {mod} --continue")
+        self.key("Enter")
+        self.assertEqual(self.claude_call()["args"], "")
 
-    def test_ctrl_l_resumes(self):
+    def seed_past_session(self, project, sid="aaaabbbb-1111-2222-3333-444455556666", title="Fix beta bug"):
+        d = os.path.join(self.home, ".claude", "projects", "-seeded")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, sid + ".jsonl"), "w") as f:
+            f.write(json.dumps({"type": "ai-title", "aiTitle": title}) + "\n")
+            f.write(json.dumps({"type": "user", "cwd": project, "message": {"content": "please fix the bug"}}) + "\n")
+        return sid
+
+    def test_ctrl_l_resumes_the_exact_session_by_id(self):
+        sid = self.seed_past_session(os.path.join(self.root, "beta"))
         self.start()
         self.ready()
+        self.quiet()
         self.type("beta")
-        self.wait_for(lambda: "beta handover note" in self.screen(), "beta preview")
+        self.wait_for(lambda: "ctrl-l resumes: Fix beta bug" in self.screen(), "preview names what ctrl-l will do")
+        self.settle()
         self.key("C-l")
         call = self.claude_call()
         self.assertTrue(call["cwd"].endswith("/beta"))
-        self.assertEqual(call["args"], "--continue")
+        self.assertEqual(call["args"], f"--resume {sid}")        # never --continue
+
+    def test_ctrl_l_with_no_history_starts_a_new_session(self):
+        self.start()
+        self.ready()
+        self.quiet()
+        self.type("alpha")
+        self.wait_for(lambda: "alpha readme line" in self.screen(), "alpha preview")
+        self.settle()
+        self.key("C-l")
+        call = self.claude_call()
+        self.assertTrue(call["cwd"].endswith("/alpha"))
+        self.assertEqual(call["args"], "")
 
     def test_escape_exits_without_launching(self):
         self.start()
@@ -263,6 +288,14 @@ class E2E(unittest.TestCase):
         with open(os.path.join(self.tmp, "gh-repos.json"), "w") as f:
             json.dump([{"name": n, "description": "d", "visibility": "PRIVATE", "isArchived": False,
                         "pushedAt": "2026-10-12T00:00:00Z"} for n in names], f)
+
+    def config_top(self, line):
+        """Top-level TOML keys must come before the [tags] table."""
+        path = os.path.join(self.tmp, "config")
+        with open(path) as f:
+            body = f.read()
+        with open(path, "w") as f:
+            f.write(line + "\n" + body)
 
     def prompt_row(self):
         return next(i for i, l in enumerate(self.screen().splitlines()) if l.startswith("repo>"))
@@ -518,6 +551,7 @@ class E2E(unittest.TestCase):
         alpha = os.path.join(self.root, "alpha")
         wt = os.path.join(self.root, "alpha-feature")
         git(["worktree", "add", "-q", "-b", "feature", wt], alpha)
+        self.config_top("show_worktrees = true")
         cdir = os.path.join(self.home, ".claude", "sessions")
         os.makedirs(cdir)
         me = os.getpid()
@@ -543,6 +577,7 @@ class E2E(unittest.TestCase):
         alpha = os.path.join(self.root, "alpha")
         wt = os.path.join(self.root, "alpha-feature")
         git(["worktree", "add", "-q", "-b", "feature", wt], alpha)
+        self.config_top("show_worktrees = true")
         self.start()
         self.ready()
         self.quiet()
@@ -552,6 +587,46 @@ class E2E(unittest.TestCase):
         self.key("Enter")
         self.assertEqual(os.path.realpath(self.claude_call()["cwd"]), os.path.realpath(wt))
 
+
+    # --- review round ---------------------------------------------------------
+    def test_header_leads_with_the_tab_bar_and_one_stats_line(self):
+        self.start()
+        self.ready()
+        lines = self.screen().splitlines()
+        header = [l.split("│")[0].rstrip() for l in lines[: self.prompt_row()]]
+        self.assertTrue(header[0].lstrip().startswith("◂"), header)
+        self.assertEqual(sum(1 for l in header if "streak" in l or l.lstrip().startswith("stats:")), 1)
+
+    def test_ctrl_w_expands_and_collapses_worktrees(self):
+        alpha = os.path.join(self.root, "alpha")
+        git(["worktree", "add", "-q", "-b", "feature", os.path.join(self.root, "alpha-feature")], alpha)
+        self.start()
+        self.ready()
+        self.quiet()
+        self.assertNotIn("alpha-feature", self.screen().split("│")[0])
+        self.assertIn("worktrees collapsed", self.screen())
+        self.key("C-w")
+        self.wait_for(lambda: "↳ alpha-feature" in self.screen() and "+T*" not in self.screen(), "worktree rows shown", 8)
+        self.assertNotIn("worktrees collapsed", self.screen())
+        self.settle()
+        self.key("C-w")
+        self.wait_for(lambda: "↳ alpha-feature" not in self.screen() and "+T*" not in self.screen(), "collapsed again", 8)
+
+    def test_alt_h_shows_the_help_with_both_glyph_keys(self):
+        self.start()
+        self.ready()
+        self.quiet()
+        self.key("M-h")
+        self.wait_for(lambda: "claude-hub keys" in self.screen(), "help in the preview", 8)
+        screen = self.screen()
+        for needle in ("continue last session", "◆ local + GitHub", "▶ working"):
+            self.assertIn(needle, screen)
+
+    def test_ages_resolve_inside_a_day(self):
+        self.start()
+        self.ready()
+        rows = [l.split("│")[0] for l in self.screen().splitlines() if "alpha" in l.split("│")[0]]
+        self.assertTrue(any("ago" in r or "just now" in r for r in rows), rows)   # e.g. "2h ago", not "today"
 
     # --- source tabs ---------------------------------------------------------
     def tab_is(self, name, extra=""):

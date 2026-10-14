@@ -17,6 +17,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HUB = os.path.join(ROOT, "bin", "claude-hub")
 
 
+os.environ.setdefault("CLAUDE_HUB_NO_AGENTS", "1")   # never ask a real or fake claude to list sessions
+
+
 def load_hub():
     loader = importlib.machinery.SourceFileLoader("hub_mod", HUB)
     spec = importlib.util.spec_from_loader("hub_mod", loader)
@@ -358,22 +361,22 @@ class Cli(Tmp):
 
 
 class ClaudeArgs(Tmp):
-    def test_plain_when_no_mod(self):
-        self.assertEqual(hub.claude_argv(False, home=self.tmp), ["claude"])
-        self.assertEqual(hub.claude_argv(True, home=self.tmp), ["claude", "--continue"])
+    def test_plain_start_and_continue(self):
+        self.assertEqual(hub.claude_argv(False), ["claude"])
+        self.assertEqual(hub.claude_argv(True), ["claude", "--continue"])
 
-    def test_mod_dir_is_passed_like_the_shell_function(self):
+    def test_no_plugin_dir_is_added_any_more(self):
         mod = os.path.join(self.tmp, ".claude", "mods", "project-dashboard")
-        os.makedirs(mod)
-        self.assertEqual(hub.claude_argv(False, home=self.tmp), ["claude", "--plugin-dir", mod])
-        self.assertEqual(hub.claude_argv(True, home=self.tmp), ["claude", "--plugin-dir", mod, "--continue"])
+        os.makedirs(mod)      # even if an old mod directory exists: the feature is an enabled plugin now
+        self.assertNotIn("--plugin-dir", hub.claude_argv(False, home=self.tmp))
 
 
 class PreviewLayout(unittest.TestCase):
     def test_threshold_is_in_preview_columns_not_terminal_columns(self):
         # 45% of a 100-column terminal is 45, so the alternative layout kicks in below 100 columns
-        self.assertIn("right,45%", hub.PREVIEW_WINDOW)
-        self.assertIn("<45(down", hub.PREVIEW_WINDOW)
+        # list priority: 38% preview; stacked below until the terminal is ~121 columns (38% of 121 = 46)
+        self.assertIn("right,38%", hub.PREVIEW_WINDOW)
+        self.assertIn("<46(down", hub.PREVIEW_WINDOW)
 
 
 class Dashboard(Tmp):
@@ -1119,7 +1122,7 @@ class WorktreesBadgesBulk(Tmp):
 
     def test_rows_indent_worktrees(self):
         root, parent, wt = self.mk_repo_with_worktree()
-        cfg = dict(hub.DEFAULT_CONFIG)
+        cfg = dict(hub.DEFAULT_CONFIG, show_worktrees=True)
         es = hub.group_worktrees(hub.order_entries(hub.build_entries(hub.scan_local([root]), [], cfg), cfg))
         lines = hub.fzf_lines(es, cfg, {})
         names = [l.split("\t")[1].strip() for l in lines[1:]]
@@ -1378,7 +1381,8 @@ class SessionLegend(Tmp):
         header = hub.header_lines({}, cfg, None, False, [])
         for line in hub.session_legend_lines():
             self.assertIn(line, header)
-        self.assertLess(header.index(hub.session_legend_lines()[-1]), len(header) - 1)   # above the tab bar
+        self.assertTrue(header[0].startswith("◂"))                                  # the tab bar leads
+        self.assertLess(header.index(hub.session_legend_lines()[0]), len(header))
 
     def test_legend_is_on_the_dashboard(self):
         hub.save_cache_section(stats={"computed_at": 1, "days": {}, "repo_weeks": {}, "partial": 0})
@@ -1390,6 +1394,199 @@ class SessionLegend(Tmp):
                            env=dict(os.environ, HOME=self.tmp, CLAUDE_HUB_CACHE_DIR=self.cache))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip().splitlines()[-1], hub.session_legend())
+
+
+class UxReview(Tmp):
+    """The review round: ages, collapsed worktrees, header, help, supported listing, resume by id, rm."""
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.dict(os.environ, {
+            "CLAUDE_HUB_MODE_STATE": os.path.join(self.tmp, "mode.state"),
+            "CLAUDE_HUB_WT_STATE": os.path.join(self.tmp, "wt.state"),
+            "CLAUDE_HUB_TAG_STATE": os.path.join(self.tmp, "tag.state"),
+            "CLAUDE_HUB_CLAUDE_DIR": os.path.join(self.tmp, "claude")})
+        p.start()
+        self.addCleanup(p.stop)
+        self.cfg = dict(hub.DEFAULT_CONFIG)
+        os.makedirs(os.path.join(self.tmp, "claude", "sessions"))
+
+    # --- ages
+    def test_age_resolves_inside_a_day(self):
+        now = 1_000_000.0
+        a = lambda secs: hub.age(now - secs, now)
+        self.assertEqual(a(20), "just now")
+        self.assertEqual(a(10 * 60), "10m ago")
+        self.assertEqual(a(3 * 3600 + 60), "3h ago")
+        self.assertEqual(a(26 * 3600), "1d ago")
+        self.assertEqual(a(20 * 86400), "2w ago")
+
+    # --- worktrees collapsed by default, ctrl-w toggles
+    def _entries(self):
+        def mk(name, parent=None):
+            l = {"name": name, "path": "/p/" + name, "root": "/p", "is_git": True, "ts": 1, "branch": "main", "dirty": 0,
+                 "ahead": 0, "behind": 0, "has_upstream": False, "remote": "", "slug": "", "worktree_of": parent or ""}
+            e = {"name": name, "slug": "", "path": l["path"], "local": l, "gh": None, "ts": 1, "origin": "local"}
+            if parent:
+                e["parent"] = parent
+            return e
+        return [mk("proj"), mk("proj-feature", "/p/proj"), mk("other")]
+
+    def test_worktrees_are_collapsed_until_toggled(self):
+        es = self._entries()
+        names = lambda: [l.split("\t")[6] for l in hub.fzf_lines(es, self.cfg, {}) if not l.startswith("~\t")]
+        self.assertEqual(names(), ["proj", "other"])
+        self.assertTrue(hub.toggle_worktrees(self.cfg))
+        self.assertEqual(names(), ["proj", "proj-feature", "other"])
+        self.assertFalse(hub.toggle_worktrees(self.cfg))
+        self.assertEqual(names(), ["proj", "other"])
+
+    def test_counts_and_header_hint_follow_the_collapsed_state(self):
+        es = self._entries()
+        self.assertIn("All 2", hub.tab_bar(es, self.cfg, "all", sessions_n=0))
+        hub.set_tab("all")
+        header = hub.header_lines({}, self.cfg, None, False, es)
+        self.assertTrue(any("1 worktrees collapsed" in l and "ctrl-w" in l for l in header))
+        hub.toggle_worktrees(self.cfg)
+        self.assertIn("All 3", hub.tab_bar(es, self.cfg, "all", sessions_n=0))
+        self.assertFalse(any("collapsed" in l for l in hub.header_lines({}, self.cfg, None, False, es)))
+
+    def test_show_worktrees_config(self):
+        p = os.path.join(self.tmp, "config")
+        with open(p, "w") as f:
+            f.write("show_worktrees = true\n")
+        cfg, _ = hub.load_config(p)
+        self.assertTrue(hub.worktrees_shown(cfg))
+        with open(p, "w") as f:
+            f.write('show_worktrees = "yes"\n')
+        cfg, warn = hub.load_config(p)
+        self.assertFalse(cfg["show_worktrees"])
+        self.assertIn("show_worktrees", warn)
+
+    # --- header
+    def test_header_has_tab_bar_first_and_one_short_stats_line(self):
+        from datetime import date as D
+        days = {"2026-10-13": {"c": 2, "ins": 1500, "del": 20, "bulk_ins": 54000, "bulk_del": 800, "repos": ["a"]}}
+        line = hub.stats_header_short({"stats": {"days": days}}, today=D(2026, 10, 13))
+        self.assertIn("streak 1d", line)
+        self.assertIn("today 2c +1.5k/-20 (+54.8k bulk)", line)
+        self.assertIn("week 2c", line)
+        header = hub.header_lines({"stats": {"days": days}}, self.cfg, None, False, [])
+        self.assertTrue(header[0].startswith("◂"))
+        self.assertEqual(sum(1 for l in header if l.startswith("streak")), 1)
+        self.assertFalse(any(l.startswith("sessions:") for l in header))     # only on the Sessions tab
+
+    def test_computing_copy_no_longer_says_next_launch(self):
+        self.assertNotIn("next launch", hub.stats_header_short({}))
+        self.assertNotIn("next launch", hub.stats_header({})[0])
+        self.assertNotIn("next launch", hub.dashboard_text(60))
+
+    def test_help_text_has_keys_and_both_glyph_keys(self):
+        for needle in ("ctrl-l", "ctrl-w", "alt-h", "◆ local + GitHub", "◌ GitHub only", "▶ working", "⚠ orphan",
+                       "headless"):
+            self.assertIn(needle, hub.HELP_TEXT)
+
+    def test_help_and_dashboard_lines_fit_a_narrow_preview(self):
+        for line in hub.HELP_TEXT.splitlines():
+            self.assertLessEqual(len(line), 44, line)
+        days = {"2026-10-13": {"c": 126, "ins": 35300, "del": 6900, "bulk_ins": 223300, "bulk_del": 0, "repos": list("abcdef")}}
+        from datetime import date as D
+        for line in hub.stats_lines_compact({"stats": {"days": days}}, today=D(2026, 10, 13)):
+            self.assertLessEqual(len(line), 44, line)
+
+    # --- supported listing
+    def test_fetch_agents_parses_and_filters(self):
+        payload = json.dumps([{"sessionId": "s1", "pid": "5", "name": "A"}, {"nope": 1}, "junk"])
+        with mock.patch.dict(os.environ, {"CLAUDE_HUB_NO_AGENTS": ""}), \
+                mock.patch.object(hub.shutil, "which", return_value="/x/claude"), \
+                mock.patch.object(hub, "run", return_value=(0, payload, "")):
+            hub._AGENTS_MEMO[0] = 0
+            self.assertEqual([a["sessionId"] for a in hub.fetch_agents()], ["s1"])
+
+    def test_fetch_agents_is_empty_when_it_fails_or_is_switched_off(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_HUB_NO_AGENTS": ""}), \
+                mock.patch.object(hub.shutil, "which", return_value="/x/claude"), \
+                mock.patch.object(hub, "run", return_value=(1, "", "boom")):
+            hub._AGENTS_MEMO[0] = 0
+            self.assertEqual(hub.fetch_agents(), [])
+        with mock.patch.dict(os.environ, {"CLAUDE_HUB_NO_AGENTS": "1"}):
+            hub._AGENTS_MEMO[0] = 0
+            self.assertEqual(hub.fetch_agents(), [])
+
+    def test_merge_adds_running_sessions_the_registry_missed_and_prefers_the_listing_name(self):
+        me = os.getpid()
+        reg = [{"pid": me, "sessionId": "known-0000", "name": "old name", "kind": "bg", "cwd": "/w", "jobId": "j1"}]
+        agents = [{"sessionId": "known-0000", "name": "fresh name", "pid": str(me)},
+                  {"sessionId": "new-00000", "name": "Only in listing", "pid": str(me), "kind": "background",
+                   "id": "j2", "cwd": "/x", "status": "idle"},
+                  {"sessionId": "past-0000", "name": "no process", "pid": "", "kind": "background"}]
+        merged = {e["sessionId"]: e for e in hub.merge_agents(reg, agents)}
+        self.assertEqual(merged["known-0000"]["name"], "fresh name")
+        self.assertEqual(merged["new-00000"]["jobId"], "j2")
+        self.assertNotIn("past-0000", merged)
+
+    def test_sessions_work_from_the_listing_alone_if_the_registry_changes_shape(self):
+        me = os.getpid()
+        agents = [{"sessionId": "only-0000", "name": "Listed", "pid": str(me), "kind": "background", "id": "jj",
+                   "cwd": "/w", "status": "busy"}]
+        with mock.patch.dict(os.environ, {"CLAUDE_HUB_NO_AGENTS": ""}), \
+                mock.patch.object(hub.shutil, "which", return_value="/x/claude"), \
+                mock.patch.object(hub, "run", return_value=(0, json.dumps(agents), "")):
+            hub._AGENTS_MEMO[0] = 0
+            states = {s["sid"]: s["state"] for s in hub.current_sessions()}
+        self.assertEqual(states["only-0000"], "working")
+
+    # --- ctrl-l resolves to an exact session
+    def sess(self, sid, state, cwd="/w/proj", updated=100, job=""):
+        return {"sid": sid, "job": job, "name": sid, "cwd": cwd, "kind": "bg", "state": state, "status": "",
+                "pid": 1, "tty": "", "updated": updated, "file": ""}
+
+    def test_resolve_prefers_the_most_recent_resumable_session(self):
+        ss = [self.sess("old", "past", updated=10), self.sess("new", "past", updated=50),
+              self.sess("term", "terminal", updated=99), self.sess("elsewhere", "past", cwd="/other", updated=200)]
+        kind, ident, _ = hub.resolve_resume("/w/proj", ss)
+        self.assertEqual((kind, ident), ("resume", "new"))      # the terminal-held and other-project ones are skipped
+
+    def test_resolve_attaches_a_running_background_session(self):
+        ss = [self.sess("bg", "detached", updated=90, job="jobX"), self.sess("past", "past", updated=10)]
+        self.assertEqual(hub.resolve_resume("/w/proj", ss)[:2], ("attach", "jobX"))
+
+    def test_resolve_with_no_history_starts_new(self):
+        self.assertEqual(hub.resolve_resume("/w/proj", [])[0], "new")
+
+    def test_continue_last_execs_resume_by_id_in_the_project(self):
+        d = os.path.join(self.tmp, "proj")
+        os.makedirs(d)
+        ss = [self.sess("abc-123", "past", cwd=d, updated=time.time() - 60)]
+        with mock.patch.object(hub, "load_sessions", return_value=ss), \
+                mock.patch.object(hub.os, "execvp") as ex, mock.patch.object(hub.os, "chdir") as cd:
+            hub.continue_last(d)
+        cd.assert_called_with(d)
+        self.assertEqual(ex.call_args[0][1], ["claude", "--resume", "abc-123"])
+
+    def test_preview_states_what_ctrl_l_will_do(self):
+        d = os.path.join(self.tmp, "proj")
+        os.makedirs(d)
+        sh(["git", "init", "-q", "-b", "main"], d)
+        ss = [self.sess("abc-123", "past", cwd=d, updated=time.time() - 60)]
+        ss[0]["name"] = "Fix the login bug"
+        with mock.patch.object(hub, "load_sessions", return_value=ss), mock.patch.object(hub, "live_sessions", return_value=[]):
+            text = hub.preview_text(d, "", "proj", 80)
+        self.assertIn("ctrl-l resumes: Fix the login bug", text)
+
+    # --- rm for idle background sessions
+    def test_stop_uses_rm_for_idle_and_stop_for_working(self):
+        calls = []
+
+        def fake_run(args, **kw):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0)
+        entry = {"sid": "s", "state": "x"}
+        with mock.patch("builtins.input", return_value="y"), mock.patch.object(hub.time, "sleep"), \
+                mock.patch.object(hub.subprocess, "run", side_effect=fake_run):
+            hub.session_stop("session:detached:jobA:5:s")
+            hub.session_stop("session:working:jobB:5:s")
+        self.assertEqual(calls, [["claude", "rm", "jobA"], ["claude", "stop", "jobB"]])
 
 
 if __name__ == "__main__":
