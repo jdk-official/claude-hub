@@ -130,7 +130,7 @@ Sessions, worktrees and statistics (added 2026-10-13)
 - **FR-54** The launcher shall never give fzf an empty list; an empty tab shall show one inert placeholder row that Enter, `ctrl-l` and `ctrl-x` ignore.
 - **FR-55** While the Sessions tab is shown, the header shall carry a key to the session glyphs (working, attached, detached, terminal, headless, orphan, stale, past) in lines short enough for a 50-column terminal, each session row shall begin with its state glyph, and the key shall also appear on the home dashboard and at the end of `claude-hub sessions`.
 - **FR-56** The launcher shall show linked worktrees collapsed under their parent project by default, with a count on the parent and a header note of how many are collapsed; `ctrl-w` and the `show_worktrees` setting shall expand them.
-- **FR-57** The header shall lead with the tab bar, followed by a single short statistics line (streak, today, week, bulk lines) and the GitHub status; the full figures shall be on the home dashboard.
+- **FR-57** The header shall lead with the tab bar, followed by the GitHub status; it shall not repeat the statistics (streak, today, week, bulk lines), which are shown once, on the home dashboard that is selected when the picker opens.
 - **FR-58** The list shall have layout priority: the side-by-side preview shall take no more than 38% of the width and shall be stacked below the list when the terminal is narrower than about 121 columns.
 - **FR-59** Ages shall resolve to minutes and hours inside a day (`12m ago`, `3h ago`).
 - **FR-60** The launcher shall provide a help view (`alt-h`) listing the keys, the project glyphs, the markers and the session glyphs.
@@ -244,7 +244,7 @@ All numbers are targets to be measured, not measurements.
 - **AC-44** Given a tab with no rows, when it is selected, then a placeholder row is shown, no rows from the previous tab remain, and the next tab key still works.
 - **AC-45** Given the Sessions tab, when it is shown, then the header lists all eight glyphs with their names, every legend line is at most 44 characters, and each session row begins with the glyph of its state.
 - **AC-46** Given a project with worktrees, when the list renders with default settings, then the worktrees are not listed, the parent shows `⎇N`, the header says how many are collapsed, and `ctrl-w` lists them.
-- **AC-47** When the picker opens, the first header line is the tab bar and there is exactly one statistics line.
+- **AC-47** When the picker opens, the first header line is the tab bar and no header line repeats the streak or week figures.
 - **AC-48** Given a terminal 130 columns wide, when the list renders beside the preview, then each row's origin label is fully visible.
 - **AC-49** Given a project with a past session, when `ctrl-l` is pressed, then `claude --resume <that session id>` is run in the project; given no sessions, a new session is started; `--continue` is never used.
 - **AC-50** Given the sessions listing returns a session the registry does not contain, then it appears on the Sessions tab.

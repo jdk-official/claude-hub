@@ -38,3 +38,4 @@ decisions also get their own record under `adr/` (see [adr/README.md](../adr/REA
   running in the background and only guesses by directory).
 - 2026-10-14: `claude agents --json --all` is the primary session source (documented); registry and transcripts enrich it.
 - 2026-10-14: Auto-launch defaults to shells that start in the home directory; the claude() wrapper was removed.
+- 2026-10-14: Statistics are shown once, on the home dashboard; the header does not repeat them.

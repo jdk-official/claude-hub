@@ -1464,20 +1464,24 @@ class UxReview(Tmp):
         self.assertIn("show_worktrees", warn)
 
     # --- header
-    def test_header_has_tab_bar_first_and_one_short_stats_line(self):
-        from datetime import date as D
+    def test_header_has_the_tab_bar_first_and_no_statistics_line(self):
         days = {"2026-10-13": {"c": 2, "ins": 1500, "del": 20, "bulk_ins": 54000, "bulk_del": 800, "repos": ["a"]}}
-        line = hub.stats_header_short({"stats": {"days": days}}, today=D(2026, 10, 13))
-        self.assertIn("streak 1d", line)
-        self.assertIn("today 2c +1.5k/-20 (+54.8k bulk)", line)
-        self.assertIn("week 2c", line)
         header = hub.header_lines({"stats": {"days": days}}, self.cfg, None, False, [])
         self.assertTrue(header[0].startswith("◂"))
-        self.assertEqual(sum(1 for l in header if l.startswith("streak")), 1)
-        self.assertFalse(any(l.startswith("sessions:") for l in header))     # only on the Sessions tab
+        self.assertFalse(any(l.startswith("streak") or "bulk" in l for l in header))   # lives on the dashboard
+        self.assertFalse(any(l.startswith("sessions:") for l in header))               # only on the Sessions tab
+        self.assertFalse(any(l.startswith("stats:") for l in header))
+
+    def test_dashboard_still_has_the_streak_today_and_week(self):
+        from datetime import date as D
+        days = {"2026-10-13": {"c": 2, "ins": 1500, "del": 20, "bulk_ins": 54000, "bulk_del": 800, "repos": ["a"]}}
+        text = "\n".join(hub.stats_lines_compact({"stats": {"days": days}}, today=D(2026, 10, 13)))
+        self.assertIn("streak 1d", text)
+        self.assertIn("today 2c", text)
+        self.assertIn("week  2c", text)
+        self.assertIn("(+54.8k bulk)", text)
 
     def test_computing_copy_no_longer_says_next_launch(self):
-        self.assertNotIn("next launch", hub.stats_header_short({}))
         self.assertNotIn("next launch", hub.stats_header({})[0])
         self.assertNotIn("next launch", hub.dashboard_text(60))
 
