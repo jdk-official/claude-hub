@@ -47,6 +47,8 @@ PREVIEW_WINDOW = "right,45%,wrap,<45(down,40%,wrap)"
 STATS_DAYS = 400
 STATS_TTL = 300
 BULK_LINES = 5000   # a single commit above this is a bulk import (vendored code, generated files)
+TABS = ("all", "local", "github", "other", "sessions")
+TAB_LABEL = {"all": "All", "local": "Local", "github": "GitHub", "other": "Other", "sessions": "Sessions"}
 STAT_DAYS = 14  # window for line counts; older commits count toward streaks and sparklines only
 IDENTITY_EMAILS = {"jonathan@kyte.me.uk"}
 BLOCKS = "▁▂▃▄▅▆▇█"
@@ -59,6 +61,7 @@ DEFAULT_CONFIG = {
     "hidden": [],
     "tags": {},
     "count": 10,
+    "start_tab": "all",
 }
 
 # Never let a repo's own config run code: the scan walks untrusted scratch dirs.
@@ -160,6 +163,12 @@ def load_config(path=None):
                            for k, tl in v.items()}
         else:
             warn.append("tags")
+    if "start_tab" in data:
+        v = data["start_tab"]
+        if isinstance(v, str) and v.lower() in TABS:
+            cfg["start_tab"] = v.lower()
+        else:
+            warn.append("start_tab")
     if "count" in data:
         v = data["count"]
         if isinstance(v, int) and not isinstance(v, bool) and v > 0:
@@ -431,6 +440,17 @@ def parse_ts(s):
         return 0
 
 
+def origin_label(l):
+    """Where a local directory comes from, said plainly: gh:<owner> for a GitHub remote, dir:<root> for a
+    scan root that is not the clone root, otherwise local. Never the bare folder name that looked like 'github'."""
+    if l.get("slug"):
+        return "gh:" + l["slug"].split("/")[0]
+    root = os.path.realpath(l["root"].rstrip("/"))
+    if root == os.path.realpath(CLONE_ROOT):
+        return "local"
+    return "dir:" + os.path.basename(root)
+
+
 def build_entries(local, gh_repos, cfg):
     """Merge local dirs and GitHub repos; de-dup by remote slug; drop hidden/archived."""
     entries, by_slug = [], {}
@@ -440,8 +460,7 @@ def build_entries(local, gh_repos, cfg):
         if key in by_slug:
             continue  # same remote cloned twice: keep the most recently active one
         e = {"name": l["name"], "slug": l["slug"], "path": l["path"], "local": l, "gh": None,
-             "ts": l["ts"], "origin": l["slug"].split("/")[0] if l["slug"]
-             else os.path.basename(l["root"].rstrip("/"))}
+             "ts": l["ts"], "origin": origin_label(l)}
         by_slug[key] = e
         entries.append(e)
     for g in gh_repos:
@@ -452,7 +471,7 @@ def build_entries(local, gh_repos, cfg):
             e["ts"] = max(e["ts"], parse_ts(g.get("pushedAt")))
         elif not g.get("isArchived"):
             e = {"name": g["name"], "slug": slug, "path": "", "local": None, "gh": g,
-                 "ts": parse_ts(g.get("pushedAt")), "origin": g["owner"]}
+                 "ts": parse_ts(g.get("pushedAt")), "origin": "gh:" + g["owner"]}
             by_slug[slug.lower()] = e
             entries.append(e)
     link_worktrees(entries)
@@ -541,9 +560,7 @@ def markers(e, cfg, prs=None):
     n = pr_count(e, prs)
     if n:
         parts.append(f"PR{n}")
-    if not l:
-        parts.append("☁")
-    return " ".join(parts)
+    return " ".join(parts)   # GitHub-only is shown by the leading source glyph, not repeated here
 
 
 def state_text(e):
@@ -561,10 +578,83 @@ def state_text(e):
     return s
 
 
+SOURCE_GLYPH = {"synced": "◆", "local": "⌂", "github": "◌", "other-owner": "◇", "folder": "▫", "worktree": "↳"}
+SOURCE_WORD = {"synced": "local + GitHub", "local": "local only", "github": "GitHub only (not cloned)",
+               "other-owner": "someone else's clone", "folder": "plain folder", "worktree": "worktree"}
+
+
+def source_kind(e, cfg):
+    """What this row is: synced, local, github, other-owner, folder or worktree."""
+    l, g = e["local"], e["gh"]
+    if e.get("parent"):
+        return "worktree"
+    if l and g:
+        return "synced"
+    if g and not l:
+        return "github"
+    if l and not l["is_git"]:
+        return "folder"
+    owners = {o.lower() for o in cfg["owners"]}
+    if l and l["slug"] and l["slug"].split("/")[0].lower() not in owners:
+        return "other-owner"
+    return "local"
+
+
+def in_tab(e, cfg, tab):
+    """Tab membership. Local and GitHub overlap on purpose (a synced repo is in both)."""
+    if tab == "all":
+        return True
+    kind = source_kind(e, cfg)
+    if tab == "local":
+        return kind in ("synced", "local", "worktree")
+    if tab == "github":
+        return kind in ("synced", "github")
+    if tab == "other":
+        return kind in ("folder", "other-owner")
+    return False
+
+
+def tab_counts(entries, cfg, sessions_n=None):
+    c = {tab: sum(1 for e in entries if in_tab(e, cfg, tab)) for tab in TABS if tab != "sessions"}
+    c["sessions"] = len(live_sessions()) if sessions_n is None else sessions_n
+    return c
+
+
+def tab_bar(entries, cfg, current, sessions_n=None):
+    counts = tab_counts(entries, cfg, sessions_n)
+    parts = []
+    for tab in TABS:
+        text = f"{TAB_LABEL[tab]} {counts[tab]}"
+        parts.append(f"[{text}]" if tab == current else text)
+    return "◂ " + " · ".join(parts) + " ▸"
+
+
+STATE_MAX = 26
+NAME_MAX = 40
+
+
+def short(text, n=STATE_MAX):
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def display_name(e):
+    """Row label for a project. A worktree directly under its parent repeats the parent's name, so when the name
+    is too long the parent prefix is dropped (it is indented beneath it anyway); the rest is capped. The full
+    name is always in the preview and is what launches."""
+    name = e["name"]
+    if len(name) > NAME_MAX and e.get("parent"):
+        prefix = os.path.basename(e["parent"].rstrip("/")) + "-"
+        if name.startswith(prefix) and len(name) > len(prefix):
+            name = name[len(prefix):]
+    return short(name, NAME_MAX)
+
+
 def row_cells(e, cfg, prs=None):
     g = e["gh"] or {}
-    return [("↳ " if e.get("parent") else "") + e["name"], markers(e, cfg, prs), age(e["ts"]), state_text(e),
-            e["origin"],
+    # origin comes before state: "where does this live" matters more than the branch text, which is what
+    # gets truncated when the list pane is narrow
+    return [SOURCE_GLYPH[source_kind(e, cfg)] + " " + display_name(e), markers(e, cfg, prs), age(e["ts"]),
+            e["origin"], short(state_text(e)),
             (g.get("visibility") or "").lower(), CONTROL_RE.sub(" ", g.get("description") or "")]
 
 
@@ -673,11 +763,14 @@ def dashboard_text(width=60, today=None):
     out.append("last 12 weeks (local clones, authored commits)")
     out.extend(heatmap(s.get("days", {}), today, color=True))
     out.append("")
-    out.append(wrap("Markers: ★ pinned  ●N dirty files  ↑N ahead  PRN open PRs  ☁ GitHub-only", width))
+    out.append(wrap("Source: ◆ local+GitHub  ⌂ local only  ◌ GitHub only  ◇ someone else's  ▫ folder  ↳ worktree", width))
+    out.append(wrap("Markers: ★ pinned  ●N dirty files  ↑N ahead  ⎇N worktrees  ▶N sessions  PRN open PRs", width))
     return "\n".join(out)
 
 
 def preview_text(path, slug, name, width=60):
+    if not (path or slug or name):
+        return "nothing selected"
     if slug.startswith("session:"):
         return session_preview(slug, path, width)
     if name == "~":
@@ -1305,27 +1398,54 @@ def mode_state_file():
     return os.environ.get("CLAUDE_HUB_MODE_STATE") or os.path.join(CACHE_DIR, "mode.state")
 
 
-def current_mode():
+def current_tab(default="all"):
     try:
         with open(mode_state_file()) as f:
-            return "sessions" if f.read().strip() == "sessions" else "projects"
+            v = f.read().strip()
     except OSError:
-        return "projects"
+        return default
+    if v == "projects":          # value written by the pre-tabs version
+        return "all"
+    return v if v in TABS else default
 
 
-def set_mode(mode):
+def set_tab(tab):
     try:
         os.makedirs(os.path.dirname(mode_state_file()), exist_ok=True)
         with open(mode_state_file(), "w") as f:
-            f.write(mode)
+            f.write(tab if tab in TABS else "all")
     except OSError:
         pass
 
 
+def step_tab(how):
+    """how: 'next', 'prev', or a 1-based number. Returns the new tab (wraps around)."""
+    cur = TABS.index(current_tab())
+    if how == "next":
+        new = (cur + 1) % len(TABS)
+    elif how == "prev":
+        new = (cur - 1) % len(TABS)
+    else:
+        try:
+            new = min(max(int(how), 1), len(TABS)) - 1
+        except ValueError:
+            new = cur
+    set_tab(TABS[new])
+    return TABS[new]
+
+
+def current_mode():
+    return "sessions" if current_tab() == "sessions" else "projects"
+
+
+def set_mode(mode):
+    set_tab("sessions" if mode == "sessions" else "all")
+
+
 def toggle_mode():
-    new = "projects" if current_mode() == "sessions" else "sessions"
-    set_mode(new)
-    return new
+    new = "all" if current_tab() == "sessions" else "sessions"
+    set_tab(new)
+    return "sessions" if new == "sessions" else "projects"
 
 
 # --- P8: launch -------------------------------------------------------------
@@ -1461,20 +1581,22 @@ def repo_tags(e, cfg):
     return []
 
 
-def header_lines(cache, cfg, warn, gh_present):
+def header_lines(cache, cfg, warn, gh_present, entries=None):
+    if entries is None:
+        entries = gather(cfg)[1]
     lines = list(stats_header(cache))
     lines.append(gh_status_line(cache, gh_present))
-    lines.append(sessions_summary() + ("   [showing sessions; ctrl-s for projects]" if current_mode() == "sessions"
-                                       else "   (ctrl-s to browse)"))
+    lines.append(sessions_summary())
     tag = current_tag()
     if tag:
         lines.append(f"tag filter: #{tag}  (ctrl-t cycles tags)")
     if warn:
         lines.append(warn)
+    lines.append(tab_bar(entries, cfg, current_tab()))
     return lines
 
 
-FOOTER = "enter open · ctrl-l resume · ctrl-r refresh · ctrl-t tags\nctrl-s sessions · ctrl-x stop · esc quit"
+FOOTER = "enter open · ctrl-l resume · ctrl-r refresh · ctrl-t tags\nctrl-s/alt-s next/prev tab · alt-1..5 jump · ctrl-x stop · esc quit"
 
 
 def under(path, base):
@@ -1516,18 +1638,23 @@ def gather(cfg):
     return cache, entries
 
 
-def fzf_lines(entries, cfg, cache, tag=""):
+def fzf_lines(entries, cfg, cache, tag="", tab="all"):
     """Tab fields: 1 id (identity across reloads), 2 name, 3 tags, 4 columns, 5 path, 6 slug, 7 name.
     fzf displays fields 2-4 and searches fields 2-3 only (name and tags), so a query never matches
     the age, branch or marker text."""
+    if tab != "all":
+        entries = [e for e in entries if in_tab(e, cfg, tab)]
     if tag:
         entries = [e for e in entries if tag in repo_tags(e, cfg)]
     rows = [row_cells(e, cfg, cache.get("prs")) for e in entries]
+    if tab != "all" and len(rows) > 1 and len({r[3] for r in rows}) == 1:
+        for r in rows:
+            r[3] = ""          # every row here comes from the same place; the preview still names it
     w = [max([len(r[i]) for r in rows] or [0]) for i in range(6)]
     tagtxt = [" ".join("#" + x for x in repo_tags(e, cfg)) for e in entries]
     tw = max([len(x) for x in tagtxt] or [0])
     lines = []
-    if not tag:
+    if not tag and tab in ("all", "local"):
         hs = cache.get("_home_sessions") or {}
         badge = ("  ▶%d" % hs["n"] if hs.get("n") else "") + ("  ⚠%d" % hs["orphan"] if hs.get("orphan") else "")
         lines.append("\t".join(["~", "~", " " * tw, "(home: dashboard, system and account work)" + badge,
@@ -1538,6 +1665,18 @@ def fzf_lines(entries, cfg, cache, tag=""):
         lines.append("\t".join([ident, r[0].ljust(w[0]), tg.ljust(tw), cols.rstrip(),
                                e["path"], e["slug"], e["name"]]))
     return lines
+
+
+EMPTY_ID = "~empty"
+
+
+def ensure_rows(lines, tab="all"):
+    """fzf must never be handed an empty list: under --track an empty reload leaves the previous tab's rows on
+    screen (or blocks input). An empty tab gets one inert placeholder row that Enter and ctrl-x ignore."""
+    if lines:
+        return lines
+    text = "(no sessions)" if tab == "sessions" else f"(nothing in the {TAB_LABEL.get(tab, tab)} tab)"
+    return ["\t".join([EMPTY_ID, text, "", "", "", "", ""])]
 
 
 def me_cmd():
@@ -1630,6 +1769,9 @@ def main(argv):
         return run_stats(args[1:], cfg)
     if "--session-stop" in args:   # ctrl-x (run with the terminal, so it can ask for confirmation)
         return session_stop(args[args.index("--session-stop") + 1])
+    if "--tab" in args:           # ctrl-s / alt-s / alt-1..5
+        step_tab(args[args.index("--tab") + 1])
+        return 0
     if "--toggle-mode" in args:
         toggle_mode()
         return 0
@@ -1652,15 +1794,16 @@ def main(argv):
         cycle_tag(cfg)
         if "--lines" not in args:
             return 0
-    if "--header" in args:   # header needs the cache only, not a local scan
+    if "--header" in args:   # the tab bar counts rows, so this does one local scan
         print("\n".join(header_lines(load_cache(), cfg, warn, shutil.which("gh") is not None)))
         return 0
     if "--lines" in args:
-        if current_mode() == "sessions":
-            print("\n".join(session_lines(load_sessions())))
+        tab = current_tab()
+        if tab == "sessions":
+            print("\n".join(ensure_rows(session_lines(load_sessions()), tab)))
             return 0
         cache, entries = gather(cfg)
-        print("\n".join(fzf_lines(entries, cfg, cache, current_tag())))
+        print("\n".join(ensure_rows(fzf_lines(entries, cfg, cache, current_tag(), tab), tab)))
         return 0
     n = cfg["count"]
     if "-n" in args:
@@ -1685,7 +1828,12 @@ def main(argv):
         sys.exit(f"claude-hub: this fzf is too old (missing {', '.join(missing)}). Upgrade: sudo pacman -S fzf")
     seen = cache_mtime()
     spawn_refresh()
-    start_mode = "sessions" if "--sessions" in args else "projects"
+    start_tab = cfg["start_tab"]
+    if "--sessions" in args:
+        start_tab = "sessions"
+    if "--tab-name" in args:
+        v = args[args.index("--tab-name") + 1]
+        start_tab = v if v in TABS else start_tab
     sess = make_session_dir()
     env = dict(os.environ)
     me = me_cmd()
@@ -1693,12 +1841,14 @@ def main(argv):
     if live:
         env["CLAUDE_HUB_MODE_STATE"] = os.path.join(sess, "mode.state")
         os.environ["CLAUDE_HUB_MODE_STATE"] = env["CLAUDE_HUB_MODE_STATE"]
-    set_mode(start_mode)
-    if start_mode == "sessions":
-        lines = session_lines(load_sessions())
+    set_tab(start_tab)
+    if start_tab == "sessions":
+        lines = ensure_rows(session_lines(load_sessions()), start_tab)
+    else:
+        lines = ensure_rows(fzf_lines(entries, cfg, cache, "", start_tab), start_tab)
     argv_fzf = ["fzf", "--delimiter", "\t", "--tabstop", "1", "--with-nth", "2,3,4", "--nth", "1,2",
                 "--height", "100%", "--layout", "reverse", "--header-first",
-                "--prompt", "session> " if start_mode == "sessions" else "repo> ",
+                "--prompt", "session> " if start_tab == "sessions" else "repo> ",
                 "--expect", "ctrl-l", "--preview", f"{me} --preview {{5}} {{6}} {{7}}",
                 "--preview-window", PREVIEW_WINDOW]
     if live:
@@ -1707,16 +1857,21 @@ def main(argv):
         os.environ["CLAUDE_HUB_TAG_STATE"] = env["CLAUDE_HUB_TAG_STATE"]   # so header_lines sees the same state
         argv_fzf += [
             "--footer", FOOTER, "--listen", sock, "--track", "--id-nth", "1",
+            # Enter on the placeholder row of an empty tab does nothing (it would otherwise close the picker)
+            "--bind", f"enter:transform:[ {{1}} = {shlex.quote(EMPTY_ID)} ] && echo ignore || echo accept",
             # ctrl-r returns at once (the refresh runs detached and the watcher reloads when it finishes).
             # Header updates go BEFORE reload: under --track fzf drops actions queued after a reload.
             "--bind", f"ctrl-r:change-prompt(refreshing> )+execute-silent({me} --kick-refresh)",
             "--bind", f"ctrl-t:execute-silent({me} --cycle-tag)+transform-header({me} --header)+reload({me} --lines)",
-            "--bind", (f"ctrl-s:execute-silent({me} --toggle-mode)+transform-prompt({me} --prompt)"
-                       f"+transform-header({me} --header)+reload({me} --lines)"),
+            # tabs: every tab switch updates state first, then prompt, header (before reload) and list
+            *[x for key, how in (("ctrl-s", "next"), ("alt-s", "prev"), ("alt-1", "1"), ("alt-2", "2"),
+                                 ("alt-3", "3"), ("alt-4", "4"), ("alt-5", "5"))
+              for x in ("--bind", (f"{key}:execute-silent({me} --tab {how})+transform-prompt({me} --prompt)"
+                                   f"+transform-header({me} --header)+reload({me} --lines)"))],
             "--bind", f"ctrl-x:execute({me} --session-stop {{6}})+transform-header({me} --header)+reload({me} --lines)"]
     else:
         warn = (warn + " · " if warn else "") + "live refresh unavailable (no private runtime dir)"
-    header = "\n".join(header_lines(cache, cfg, warn, gh_present))
+    header = "\n".join(header_lines(cache, cfg, warn, gh_present, entries))
     argv_fzf += ["--header", header]
     proc = subprocess.Popen(argv_fzf, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
     if live:
@@ -1738,6 +1893,8 @@ def main(argv):
     if not pick:
         return 0
     f = (pick.split("\t") + [""] * 7)[:7]
+    if f[0] == EMPTY_ID:          # the placeholder row of an empty tab
+        return 0
     name, path, slug = f[1].strip(), f[4], f[5]
     if slug.startswith("session:"):
         open_session(slug, path)

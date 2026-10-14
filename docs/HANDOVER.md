@@ -30,6 +30,8 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
   orphaned, stale and past sessions, with attach, resume and confirmed clean-up.
 - Done (2026-10-14): session badges on project and home rows, worktrees grouped under parents, bulk lines
   reported separately, headless sessions distinguished from orphans, PRD brought up to date.
+- Done (2026-10-14): source glyph on every row, honest origin labels, tabs on ctrl-s (All, Local, GitHub, Other,
+  Sessions) with a counted tab bar, `start_tab` config, placeholder row for empty tabs.
 - Reviewed: independent code review (1 HIGH, 6 MEDIUM, 7 LOW) all addressed in `review-fixes`: failed refresh no longer
   wipes cached repos, clone cleanup can never delete a directory claude-hub did not create, locked cache writes,
   git runs with fsmonitor/hooks disabled, stats union clones and flag timeouts. 63 tests.

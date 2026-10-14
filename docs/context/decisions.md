@@ -30,3 +30,6 @@ decisions also get their own record under `adr/` (see [adr/README.md](../adr/REA
 - 2026-10-14: Worktrees are grouped under their parent and never de-duplicated against it (they share the remote).
 - 2026-10-14: Statistics cannot exclude worktrees (one commit database); bulk commits (over 5000 lines) are reported apart.
 - 2026-10-14: Print-mode and SDK sessions are `headless`, not `orphan`, so only abandoned interactive sessions are flagged.
+- 2026-10-14: Tabs All/Local/GitHub/Other/Sessions on ctrl-s; Local and GitHub overlap; Sessions last, alt-5 jumps to it.
+- 2026-10-14: Origin labels are gh:<owner>, dir:<name> or local; the folder name is never shown bare.
+- 2026-10-14: An empty list is never passed to fzf (placeholder row), after an end-to-end test found stale rows and blocked input.
