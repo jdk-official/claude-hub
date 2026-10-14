@@ -109,6 +109,14 @@ class E2E(unittest.TestCase):
     def ready(self):
         self.wait_for(lambda: "repo>" in self.screen() and "alpha" in self.screen(), "picker")
 
+    def quiet(self):
+        """Wait for the startup background refresh to finish and its reload to land. A key pressed while fzf
+        re-finds the tracked row is discarded, which is correct behaviour but makes timing-sensitive tests flaky."""
+        lock = os.path.join(self.cache, "refresh.lock")
+        self.wait_for(lambda: not os.path.exists(lock), "background refresh to finish", 12)
+        time.sleep(0.8)
+        self.wait_for(lambda: "+T*" not in self.screen(), "reload to settle", 6)
+
     def type(self, text):
         self.tmux("send-keys", "-t", "t", "-l", text)
 
@@ -413,6 +421,7 @@ class E2E(unittest.TestCase):
         self.seed_sessions()
         self.start()
         self.ready()
+        self.quiet()
         self.key("C-s")
         self.wait_for(lambda: "session>" in self.screen() and "Overnight build" in self.screen(),
                       "sessions view", 8)
@@ -483,6 +492,46 @@ class E2E(unittest.TestCase):
         self.assertIn("Overnight build", r.stdout)
         self.assertIn("Fix the login bug", r.stdout)
         self.assertIn("sessions:", r.stdout.splitlines()[-1])
+
+
+    # --- badges and worktrees -----------------------------------------------
+    def test_session_badge_and_worktree_grouping_in_the_project_list(self):
+        alpha = os.path.join(self.root, "alpha")
+        wt = os.path.join(self.root, "alpha-feature")
+        git(["worktree", "add", "-q", "-b", "feature", wt], alpha)
+        cdir = os.path.join(self.home, ".claude", "sessions")
+        os.makedirs(cdir)
+        me = os.getpid()
+        with open(f"/proc/{me}/stat") as f:
+            start = f.read().rsplit(")", 1)[1].split()[19]
+        for pid_off, cwd, name in ((0, alpha, "Fix alpha"), (0, self.home, "Home chat")):
+            with open(os.path.join(cdir, f"{me}.{name[:3]}.json"), "w") as f:
+                json.dump({"pid": me, "sessionId": f"sid-{name[:3]}-0000", "jobId": f"job{name[:3]}", "kind": "bg",
+                           "status": "busy", "name": name, "cwd": cwd, "procStart": start,
+                           "startedAt": 1_000, "updatedAt": 2_000}, f)
+        self.start()
+        self.ready()
+        lines = self.screen().splitlines()
+        rows = [l.split("│")[0] for l in lines]
+        alpha_i = next(i for i, l in enumerate(rows) if l.lstrip(" ▌").startswith("alpha ") or l.lstrip(" ▌").startswith("alpha\t"))
+        self.assertIn("⎇1", rows[alpha_i])
+        self.assertIn("▶1", rows[alpha_i])
+        self.assertTrue(rows[alpha_i + 1].lstrip(" ▌").startswith("↳ alpha-feature"), rows[alpha_i + 1])
+        home = next(l for l in rows if "(home:" in l)
+        self.assertIn("▶1", home)
+
+    def test_worktree_row_launches_claude_in_the_worktree(self):
+        alpha = os.path.join(self.root, "alpha")
+        wt = os.path.join(self.root, "alpha-feature")
+        git(["worktree", "add", "-q", "-b", "feature", wt], alpha)
+        self.start()
+        self.ready()
+        self.quiet()
+        self.type("alpha-feature")
+        self.wait_for(lambda: "1/5" in self.screen(), "list filtered to the worktree row")
+        self.settle()
+        self.key("Enter")
+        self.assertEqual(os.path.realpath(self.claude_call()["cwd"]), os.path.realpath(wt))
 
     # --- refresh --------------------------------------------------------
     def test_failed_background_refresh_keeps_cached_github_rows(self):

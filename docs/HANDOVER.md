@@ -28,6 +28,8 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
   with the dashboard mod like the shell function does.
 - Done (after use): Sessions view (ctrl-s, `claude-hub sessions`): working, attached, detached, terminal,
   orphaned, stale and past sessions, with attach, resume and confirmed clean-up.
+- Done (2026-10-14): session badges on project and home rows, worktrees grouped under parents, bulk lines
+  reported separately, headless sessions distinguished from orphans, PRD brought up to date.
 - Reviewed: independent code review (1 HIGH, 6 MEDIUM, 7 LOW) all addressed in `review-fixes`: failed refresh no longer
   wipes cached repos, clone cleanup can never delete a directory claude-hub did not create, locked cache writes,
   git runs with fsmonitor/hooks disabled, stats union clones and flag timeouts. 63 tests.
