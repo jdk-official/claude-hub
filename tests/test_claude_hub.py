@@ -173,7 +173,7 @@ class Ordering(unittest.TestCase):
         cfg = dict(self.cfg, pinned=["a"])
         m = hub.markers(entry("a", dirty=3, ahead=2, slug="o/a", gh={"pr_count": 1}), cfg)
         self.assertEqual(m, "★ ●3 ↑2 PR1")
-        self.assertEqual(hub.markers(entry("g", local=False), self.cfg), "☁")
+        self.assertEqual(hub.markers(entry("g", local=False), self.cfg), "")   # the source glyph says GitHub-only
 
 
 class Merge(unittest.TestCase):
@@ -197,7 +197,7 @@ class Merge(unittest.TestCase):
     def test_same_name_different_owner_both_listed(self):  # S7
         es = hub.build_entries([self.local("x", "other/x")], [self.gh("x")], self.cfg)
         self.assertEqual(len(es), 2)
-        self.assertEqual({e["origin"] for e in es}, {"other", "jdk-official"})
+        self.assertEqual({e["origin"] for e in es}, {"gh:other", "gh:jdk-official"})
 
     def test_two_clones_of_one_remote_dedup(self):
         es = hub.build_entries(
@@ -212,7 +212,7 @@ class Merge(unittest.TestCase):
 
     def test_origin_label_for_non_remote_dirs(self):
         es = hub.build_entries([self.local("notes", root="/mnt/data/files")], [], self.cfg)
-        self.assertEqual(es[0]["origin"], "files")
+        self.assertEqual(es[0]["origin"], "dir:files")
 
 
 class Excerpt(Tmp):
@@ -1123,7 +1123,7 @@ class WorktreesBadgesBulk(Tmp):
         es = hub.group_worktrees(hub.order_entries(hub.build_entries(hub.scan_local([root]), [], cfg), cfg))
         lines = hub.fzf_lines(es, cfg, {})
         names = [l.split("\t")[1].strip() for l in lines[1:]]
-        self.assertEqual(names, ["proj", "↳ proj-feature"])
+        self.assertEqual(names, ["◇ proj", "↳ proj-feature"])   # proj has someone else's remote; the worktree is ↳
         self.assertEqual(lines[2].split("\t")[6], "proj-feature")      # the raw name is still what launches
 
     def test_preview_lists_other_worktrees(self):
@@ -1190,6 +1190,157 @@ class WorktreesBadgesBulk(Tmp):
         from datetime import date as D
         days = {"2026-10-13": {"c": 1, "ins": 5, "del": 1, "repos": ["r"]}}
         self.assertNotIn("bulk", hub.stats_header({"stats": {"days": days}}, today=D(2026, 10, 13))[0])
+
+
+class SourceTabs(Tmp):
+    """Source glyphs, honest origin labels, and tabs (feature set from the 'where does this live' brainstorm)."""
+
+    def setUp(self):
+        super().setUp()
+        self.state = os.path.join(self.tmp, "mode.state")
+        p = mock.patch.dict(os.environ, {"CLAUDE_HUB_MODE_STATE": self.state})
+        p.start()
+        self.addCleanup(p.stop)
+        self.cfg = dict(hub.DEFAULT_CONFIG, owners=["me"])
+
+    def e(self, name, kind, remote_owner="", root="/mnt/data/github", parent=False):
+        l = None
+        g = None
+        if kind in ("synced", "local", "other-owner", "folder", "worktree"):
+            l = {"name": name, "path": f"{root}/{name}", "root": root, "is_git": kind != "folder", "ts": 1,
+                 "branch": "main", "dirty": 0, "ahead": 0, "behind": 0, "has_upstream": False, "remote": "",
+                 "slug": f"{remote_owner}/{name}" if remote_owner else "", "worktree_of": ""}
+        if kind in ("synced", "github"):
+            g = {"name": name, "owner": "me", "pr_count": 0}
+        e = {"name": name, "slug": f"me/{name}" if g else (l or {}).get("slug", ""), "path": l["path"] if l else "",
+             "local": l, "gh": g, "ts": 1, "origin": "x"}
+        if parent:
+            e["parent"] = "/p"
+        return e
+
+    def test_source_kinds(self):
+        c = self.cfg
+        self.assertEqual(hub.source_kind(self.e("a", "synced"), c), "synced")
+        self.assertEqual(hub.source_kind(self.e("b", "github"), c), "github")
+        self.assertEqual(hub.source_kind(self.e("c", "local"), c), "local")
+        self.assertEqual(hub.source_kind(self.e("d", "folder"), c), "folder")
+        self.assertEqual(hub.source_kind(self.e("e", "other-owner", remote_owner="them"), c), "other-owner")
+        self.assertEqual(hub.source_kind(self.e("f", "local", remote_owner="me"), c), "local")
+        self.assertEqual(hub.source_kind(self.e("w", "worktree", parent=True), c), "worktree")
+
+    def test_tab_membership_overlaps_local_and_github(self):
+        c = self.cfg
+        synced, gh_only = self.e("a", "synced"), self.e("b", "github")
+        local, folder = self.e("c", "local"), self.e("d", "folder")
+        theirs = self.e("e", "other-owner", remote_owner="them")
+        member = lambda e: {t for t in hub.TABS if hub.in_tab(e, c, t)}
+        self.assertEqual(member(synced), {"all", "local", "github"})
+        self.assertEqual(member(gh_only), {"all", "github"})
+        self.assertEqual(member(local), {"all", "local"})
+        self.assertEqual(member(folder), {"all", "other"})
+        self.assertEqual(member(theirs), {"all", "other"})
+
+    def test_counts_and_bar_mark_the_current_tab(self):
+        es = [self.e("a", "synced"), self.e("b", "github"), self.e("c", "local"), self.e("d", "folder")]
+        bar = hub.tab_bar(es, self.cfg, "github", sessions_n=3)
+        self.assertEqual(bar, "◂ All 4 · Local 2 · [GitHub 2] · Other 1 · Sessions 3 ▸")
+
+    def test_rows_start_with_the_source_glyph(self):
+        c = self.cfg
+        cells = lambda e: hub.row_cells(e, c)[0]
+        self.assertEqual(cells(self.e("a", "synced")), "◆ a")
+        self.assertEqual(cells(self.e("b", "github")), "◌ b")
+        self.assertEqual(cells(self.e("c", "local")), "⌂ c")
+        self.assertEqual(cells(self.e("d", "folder")), "▫ d")
+        self.assertEqual(cells(self.e("e", "other-owner", remote_owner="them")), "◇ e")
+        self.assertEqual(cells(self.e("w", "worktree", parent=True)), "↳ w")
+
+    def test_origin_labels_never_use_a_bare_folder_name(self):
+        base = {"root": hub.CLONE_ROOT, "slug": "", "path": hub.CLONE_ROOT + "/x"}
+        self.assertEqual(hub.origin_label(base), "local")
+        self.assertEqual(hub.origin_label(dict(base, root="/mnt/data/scratch")), "dir:scratch")
+        self.assertEqual(hub.origin_label(dict(base, slug="winboat-org/helios")), "gh:winboat-org")
+
+    def test_tab_filtering_in_the_list(self):
+        es = [self.e("a", "synced"), self.e("b", "github"), self.e("c", "local"), self.e("d", "folder")]
+        names = lambda tab: [l.split("\t")[6] for l in hub.fzf_lines(es, self.cfg, {}, "", tab) if l.split("\t")[0] != "~"]
+        self.assertEqual(names("all"), ["a", "b", "c", "d"])
+        self.assertEqual(names("local"), ["a", "c"])
+        self.assertEqual(names("github"), ["a", "b"])
+        self.assertEqual(names("other"), ["d"])
+
+    def test_home_row_only_on_all_and_local(self):
+        has_home = lambda tab: any(l.startswith("~\t") for l in hub.fzf_lines([], self.cfg, {}, "", tab))
+        self.assertTrue(has_home("all"))
+        self.assertTrue(has_home("local"))
+        self.assertFalse(has_home("github"))
+        self.assertFalse(has_home("other"))
+
+    def test_tab_stepping_wraps_and_jumps(self):
+        self.assertEqual(hub.current_tab(), "all")
+        self.assertEqual([hub.step_tab("next") for _ in range(5)], ["local", "github", "other", "sessions", "all"])
+        self.assertEqual(hub.step_tab("prev"), "sessions")
+        self.assertEqual(hub.step_tab("3"), "github")
+        self.assertEqual(hub.step_tab("99"), "sessions")      # clamped, not an error
+        self.assertEqual(hub.step_tab("nonsense"), "sessions")
+        self.assertEqual(hub.current_mode(), "sessions")
+
+    def test_old_state_value_is_understood(self):
+        with open(self.state, "w") as f:
+            f.write("projects")
+        self.assertEqual(hub.current_tab(), "all")
+
+    def test_long_state_text_is_capped_so_the_origin_stays_visible(self):
+        e = self.e("a", "local")
+        e["local"]["branch"] = "pbi/019-a-very-long-branch-name-that-would-push-everything-off"
+        cells = hub.row_cells(e, self.cfg)
+        self.assertLessEqual(len(cells[4]), hub.STATE_MAX)      # columns: name, markers, age, origin, state
+        self.assertTrue(cells[4].endswith("…"))
+        self.assertEqual(cells[3], e["origin"])
+
+    def test_origin_column_is_dropped_when_a_tab_is_uniform(self):
+        es = [self.e("a", "synced"), self.e("c", "synced")]
+        for e in es:
+            e["origin"] = "gh:me"
+        line = hub.fzf_lines(es, self.cfg, {}, "", "github")[1]
+        self.assertNotIn("gh:me", line)
+        mixed = [self.e("a", "synced"), self.e("b", "github")]
+        mixed[0]["origin"], mixed[1]["origin"] = "gh:me", "gh:other"
+        self.assertIn("gh:me", "\n".join(hub.fzf_lines(mixed, self.cfg, {}, "", "github")))
+        self.assertIn("gh:me", "\n".join(hub.fzf_lines(es, self.cfg, {}, "", "all")))   # All always shows it
+
+    def test_long_worktree_names_drop_the_parent_prefix_and_are_capped(self):
+        wt = self.e("claude-code-terminal-bar-crawl-pbi-014-ci-for-the-public-repo", "worktree", parent=True)
+        wt["parent"] = "/mnt/data/github/claude-code-terminal-bar-crawl"
+        self.assertEqual(hub.display_name(wt), "pbi-014-ci-for-the-public-repo")
+        self.assertEqual(wt["name"].startswith("claude-code"), True)          # the real name is untouched
+        short_wt = self.e("alpha-feature", "worktree", parent=True)
+        short_wt["parent"] = "/p/alpha"
+        self.assertEqual(hub.display_name(short_wt), "alpha-feature")         # short names are left alone
+        huge = self.e("x" * 60, "local")
+        self.assertEqual(len(hub.display_name(huge)), hub.NAME_MAX)
+        self.assertTrue(hub.display_name(huge).endswith("…"))
+
+    def test_empty_tabs_get_one_inert_placeholder_row(self):
+        for tab, text in (("other", "nothing in the Other tab"), ("sessions", "(no sessions)")):
+            rows = hub.ensure_rows([], tab)
+            self.assertEqual(len(rows), 1)
+            fields = rows[0].split("\t")
+            self.assertEqual(len(fields), 7)
+            self.assertEqual(fields[0], hub.EMPTY_ID)
+            self.assertIn(text, fields[1])
+        self.assertEqual(hub.ensure_rows(["a\tb"], "all"), ["a\tb"])
+
+    def test_start_tab_config(self):
+        p = os.path.join(self.tmp, "config")
+        with open(p, "w") as f:
+            f.write('start_tab = "Local"\n')
+        self.assertEqual(hub.load_config(p)[0]["start_tab"], "local")
+        with open(p, "w") as f:
+            f.write('start_tab = "nowhere"\n')
+        cfg, warn = hub.load_config(p)
+        self.assertEqual(cfg["start_tab"], "all")
+        self.assertIn("start_tab", warn)
 
 
 if __name__ == "__main__":

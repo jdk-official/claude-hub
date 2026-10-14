@@ -58,6 +58,8 @@ Glossary: **scan root** = a directory whose immediate subdirectories claude-hub 
 | D-14 | Auto-launch is a shell-profile block, not Ghostty `initial-command`, because `initial-command` never fires in a long-running single-instance Ghostty. | Verified, 2026-10-13 |
 | D-15 | A single commit above 5000 changed lines is a bulk import: it counts as a commit but its lines are reported separately. Worktrees cannot be excluded from statistics because they share one commit database. | Measured on `daily-hub`: 57 identical commits from every checkout; one 54,814-line commit of 74,960 lines, 2026-10-13 |
 | D-16 | The command and project are named `claude-hub`; environment variables are `CLAUDE_HUB_*`. | User request, 2026-10-13 |
+| D-17 | Tabs: All, Local, GitHub, Other, Sessions. Local (your git repos on this machine) and GitHub (your repos on GitHub, cloned or not) overlap on purpose; Other is plain folders and others' clones; Sessions is the last tab and `alt-5` reaches it directly. | User brief, "where does this live" brainstorm, 2026-10-14 |
+| D-18 | An empty list is never given to fzf: under `--track` an empty reload leaves the previous tab's rows on screen and, on the Sessions tab, blocks input. | Found by end-to-end tests and verified, 2026-10-14 |
 | D-11 | Keys: `ctrl-r` refresh, `ctrl-l` resume (`claude --continue`), `ctrl-t` tag filter; `ctrl-g` is left as fzf's abort alias; `ctrl-l` overrides fzf's clear-screen (fzf 0.74.3). | Confirmed by the user, 2026-10-13 |
 
 ## 4. Functional requirements
@@ -109,7 +111,7 @@ Gamification
 - **FR-33** The launcher shall count each calendar day with at least one qualifying commit once toward streaks and averages, regardless of the number of commits that day.
 
 Sessions, worktrees and statistics (added 2026-10-13)
-- **FR-37** When the user presses `ctrl-s`, the launcher shall switch the list between projects and Claude sessions, updating the prompt, header and list, and keeping the picker open.
+- **FR-37** (superseded by FR-51) When the user presses `ctrl-s`, the launcher shall switch the list, prompt and header and keep the picker open.
 - **FR-38** The launcher shall classify each Claude session as working, attached, detached, terminal, headless, orphan, stale or past from the registry and transcripts, hiding pre-warmed spare sessions and transcripts that contain no user message.
 - **FR-39** The launcher shall treat a registry entry as running only when its recorded process start time equals the live process's start time, so a reused process id is never reported as a session.
 - **FR-40** When Enter is pressed on a background session, the launcher shall run `claude attach`; on a past session, `claude --resume` in its recorded directory (the home directory with a notice if it no longer exists); on terminal, headless, orphan and stale sessions it shall explain and not launch.
@@ -120,6 +122,12 @@ Sessions, worktrees and statistics (added 2026-10-13)
 - **FR-45** The launcher shall count a commit whose changed lines exceed 5000 as a commit but report its lines separately as bulk lines.
 - **FR-46** Highlighting a project shall not change the list order and shall not trigger a list reload.
 - **FR-47** When a new interactive shell starts inside Ghostty and `CLAUDE_HUB_AUTOSTART` is not `0` and `CLAUDE_HUB_STARTED` is unset, the shell profile shall run `claude-hub` once; Esc shall leave the user at the shell.
+- **FR-49** The launcher shall begin every project row with a source glyph: `◆` on this machine and on GitHub, `⌂` local only, `◌` on GitHub but not cloned, `◇` someone else's clone, `▫` plain folder, `↳` linked worktree.
+- **FR-50** The launcher shall label each row's origin as `gh:<owner>` for a GitHub remote, `dir:<name>` for a scan root other than the clone root, and `local` for the clone root without a GitHub remote, and shall never show a bare folder name that reads as a hosting service.
+- **FR-51** The launcher shall offer the tabs All, Local, GitHub, Other and Sessions; `ctrl-s` shall move to the next tab, `alt-s` to the previous, and `alt-1` to `alt-5` shall jump to a tab; moving past either end shall wrap.
+- **FR-52** The header shall show a tab bar with a count per tab and the current tab marked.
+- **FR-53** The launcher shall open on the tab named by the `start_tab` configuration key (default `all`), or on Sessions when started with `--sessions`.
+- **FR-54** The launcher shall never give fzf an empty list; an empty tab shall show one inert placeholder row that Enter, `ctrl-l` and `ctrl-x` ignore.
 - **FR-48** When starting `claude`, the launcher shall add the same project-dashboard mod flag the user's `claude` shell function adds.
 
 ## 4a. Interface layout (mock-up reviewed and accepted by the user, 2026-10-13)
@@ -135,7 +143,7 @@ Illustrative data, not measurements. Narrow window (about 50 columns, preview be
  ★ claude-hub              ●3 ↑2   main    today   ▂▅█▃▁▁▂▆
  ★ daily-hub        ●1      main    today   ▁▁▃▅▂▁▁▁
    agent-catalog    ↑1 PR2  main    2d      ▃▁▁▂▁▁▄▁
-   PSDRoster  ☁     PR1     —       today   ▁▁▁▁▂▅▃█
+   PSDRoster  ◌     PR1     —       today   ▁▁▁▁▂▅▃█
    SADashboard              main    7d      ▁▁▁▁▁▂▁▁
  ───────────────────────────────────────────────────
  claude-hub  jdk-official · private · local+gh · #tools
@@ -149,7 +157,7 @@ Illustrative data, not measurements. Narrow window (about 50 columns, preview be
 
 Wide window (100 columns or more): same content with the preview pane to the right of the list.
 
-Markers: `★` pinned, `●N` dirty files, `↑N` commits ahead, `PRN` open PRs, `☁` GitHub-only (not cloned), `—` no branch. Sparkline is the last 8 weeks of commits. `claude-hub stats` prints a separate 12-week heatmap of at most 80 columns (FR-31, NFR-6).
+Markers: `★` pinned, `●N` dirty files, `↑N` commits ahead, `PRN` open PRs, `◌` GitHub-only (not cloned), `—` no branch. Sparkline is the last 8 weeks of commits. `claude-hub stats` prints a separate 12-week heatmap of at most 80 columns (FR-31, NFR-6).
 
 Implementation notes (design, not requirements): fzf provides the preview position switching, header and footer, match count, `reload` with `--track`, and `become` for launch. Name and tags are the searchable fields; the other columns are display-only.
 
@@ -218,6 +226,12 @@ All numbers are targets to be measured, not measurements.
 - **AC-36** Given a commit of more than 5000 changed lines, when statistics are computed, then the day's commit count includes it and its lines appear in the bulk figure, not the ordinary lines.
 - **AC-37** When every project is highlighted in turn, the list order shall be unchanged.
 - **AC-38** Given a new Ghostty window opened into a running Ghostty, when its shell starts, then the picker is shown.
+- **AC-39** Given a synced repo, a GitHub-only repo, a local-only repo, a folder and someone else's clone, when the list renders, then each row begins with `◆`, `◌`, `⌂`, `▫` and `◇` respectively.
+- **AC-40** Given a repo with no GitHub remote under the clone root and a folder under another scan root, when the list renders, then their origins read `local` and `dir:<name>`, and no row's origin is the bare word `github` unless it is a GitHub owner prefixed `gh:`.
+- **AC-41** When `ctrl-s` is pressed five times from All, the tabs shall be Local, GitHub, Other, Sessions and All, and each shall list only its own rows; a synced repo shall appear under both Local and GitHub.
+- **AC-42** When `alt-s` is pressed on All, the Sessions tab shall be shown; when `alt-3` is pressed, the GitHub tab shall be shown.
+- **AC-43** Given `start_tab = "github"` in the configuration, when the picker opens, then the GitHub tab is shown.
+- **AC-44** Given a tab with no rows, when it is selected, then a placeholder row is shown, no rows from the previous tab remain, and the next tab key still works.
 
 ## 8. Assumptions & open questions
 
@@ -254,6 +268,9 @@ All numbers are targets to be measured, not measurements.
 | 29 | Bulk threshold of 5000 changed lines in one commit. | Constant, not configurable yet. | A legitimate large feature commit is reported as bulk. |
 | 30 | Tabs and splits are also new shells and therefore also open the picker. | Accept; Esc dismisses it. | If annoying, limit auto-launch to new windows (not selected). |
 | 31 | Past sessions limited to the 40 most recent transcripts. | Keeps the view fast on large histories. | Older sessions are not listed. |
+| 32 | "Other" is defined as plain folders and someone else's clones. | Anything not on the user's GitHub and not their own git repo. | A repo expected under Local appears under Other; adjust `owners` in the configuration. |
+| 33 | The home row appears only on the All and Local tabs. | It is machine-level work, not a repository. | Missing from GitHub and Other, as intended. |
+| 34 | A repo whose remote owner is not in `owners` is "someone else's" even if it is the user's fork. | Use `owners` to add further accounts. | A fork under another account shows `◇`. |
 
 ## 9. Requirements report
 

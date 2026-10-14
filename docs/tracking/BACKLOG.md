@@ -80,6 +80,21 @@ Prompted by: "this is very project focussed; what if I have open sessions, or or
   Excluding worktrees from statistics was investigated and rejected: all checkouts share one commit database.
 - PRD brought up to date (FR-37 to FR-48, AC-28 to AC-38).
 
+## Done: source tabs, built 2026-10-14
+
+Prompted by: "make it clearer whether something is in GitHub, local or other".
+
+- Leading source glyph on every row (`◆ ⌂ ◌ ◇ ▫ ↳`); the old trailing `◌` marker was removed as redundant.
+- Honest origin labels: `gh:<owner>`, `dir:<name>`, `local`. The bare `github` that meant the folder is gone.
+- Tabs on `ctrl-s` (All, Local, GitHub, Other, Sessions), `alt-s` back, `alt-1`..`alt-5` jump, counts in a tab bar.
+- `start_tab` configuration key, default `all`.
+- Empty tabs show a placeholder row (an fzf `--track` finding; see the fzf reference).
+- Polish found by looking at the real window: `☁` and `⎘` rendered two cells wide, so GitHub-only is now `◌` and
+  someone else's clone is `◇` (all glyphs single-width); the state text is capped so it cannot push the origin off
+  screen; the origin column sits before the state; long worktree names drop their parent's prefix; on a tab where
+  every row has the same origin the column is dropped.
+- Not done from the brainstorm: colour by source, section dividers, a per-row footer ("enter: clone" vs "open").
+
 ## Later
 
 - Deferred gamification: ship counter, badges and milestones, weekly goal, finish-line nudge.

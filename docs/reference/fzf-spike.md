@@ -50,3 +50,13 @@ changes from run to run. It waits for the list, for typed text to appear, and fo
 is quiet before treating it as a regression. It is a diagnostic, not part of the test suite: the end-to-end tests
 use the same waiting approach and have been stable.
 
+## Follow-up findings from building the tabs (2026-10-14)
+
+- **An empty `reload` under `--track` is not safe.** If the reload command prints nothing, fzf keeps the previous
+  list on screen (an empty tab showed the last tab's rows), and on a list where the tracked row cannot be found it
+  can stay in the blocked state (`+T*`) so keys are ignored. Always emit at least one row; claude-hub emits an
+  inert placeholder.
+- **Enter always accepts.** To make a row inert, bind `enter` to a `transform` that prints `ignore` for that row
+  and `accept` otherwise.
+- **`alt-<digit>` keys** work as bindings (`alt-1` to `alt-5`), and tmux sends them as `M-1` to `M-5`.
+
