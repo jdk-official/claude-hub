@@ -129,7 +129,16 @@ Sessions, worktrees and statistics (added 2026-10-13)
 - **FR-53** The launcher shall open on the tab named by the `start_tab` configuration key (default `all`), or on Sessions when started with `--sessions`.
 - **FR-54** The launcher shall never give fzf an empty list; an empty tab shall show one inert placeholder row that Enter, `ctrl-l` and `ctrl-x` ignore.
 - **FR-55** While the Sessions tab is shown, the header shall carry a key to the session glyphs (working, attached, detached, terminal, headless, orphan, stale, past) in lines short enough for a 50-column terminal, each session row shall begin with its state glyph, and the key shall also appear on the home dashboard and at the end of `claude-hub sessions`.
-- **FR-48** When starting `claude`, the launcher shall add the same project-dashboard mod flag the user's `claude` shell function adds.
+- **FR-56** The launcher shall show linked worktrees collapsed under their parent project by default, with a count on the parent and a header note of how many are collapsed; `ctrl-w` and the `show_worktrees` setting shall expand them.
+- **FR-57** The header shall lead with the tab bar, followed by a single short statistics line (streak, today, week, bulk lines) and the GitHub status; the full figures shall be on the home dashboard.
+- **FR-58** The list shall have layout priority: the side-by-side preview shall take no more than 38% of the width and shall be stacked below the list when the terminal is narrower than about 121 columns.
+- **FR-59** Ages shall resolve to minutes and hours inside a day (`12m ago`, `3h ago`).
+- **FR-60** The launcher shall provide a help view (`alt-h`) listing the keys, the project glyphs, the markers and the session glyphs.
+- **FR-61** `ctrl-l` shall continue the most recent resumable session of the project by its session id (attaching if it is a running background session) and shall start a new session when there is none; it shall not use `claude --continue`. The project preview shall name the session `ctrl-l` will use.
+- **FR-62** The launcher shall read sessions from `claude agents --json --all` (the supported listing) in addition to the registry, shall work from the supported listing alone if the registry changes shape, and shall prefer its display name.
+- **FR-63** `ctrl-x` shall remove an idle background session from the list with `claude rm` (transcript kept) and stop a working one with `claude stop`, each after confirmation.
+- **FR-64** The shell-profile auto-launch (FR-47) shall by default run only when the shell starts in the home directory; `CLAUDE_HUB_AUTOSTART=always` shall run it in every new Ghostty shell and `0` shall disable it.
+- **FR-48** (superseded 2026-10-14) The launcher added the project-dashboard mod flag; that feature is now an enabled plugin, so no flag is added.
 
 ## 4a. Interface layout (mock-up reviewed and accepted by the user, 2026-10-13)
 
@@ -234,6 +243,13 @@ All numbers are targets to be measured, not measurements.
 - **AC-43** Given `start_tab = "github"` in the configuration, when the picker opens, then the GitHub tab is shown.
 - **AC-44** Given a tab with no rows, when it is selected, then a placeholder row is shown, no rows from the previous tab remain, and the next tab key still works.
 - **AC-45** Given the Sessions tab, when it is shown, then the header lists all eight glyphs with their names, every legend line is at most 44 characters, and each session row begins with the glyph of its state.
+- **AC-46** Given a project with worktrees, when the list renders with default settings, then the worktrees are not listed, the parent shows `⎇N`, the header says how many are collapsed, and `ctrl-w` lists them.
+- **AC-47** When the picker opens, the first header line is the tab bar and there is exactly one statistics line.
+- **AC-48** Given a terminal 130 columns wide, when the list renders beside the preview, then each row's origin label is fully visible.
+- **AC-49** Given a project with a past session, when `ctrl-l` is pressed, then `claude --resume <that session id>` is run in the project; given no sessions, a new session is started; `--continue` is never used.
+- **AC-50** Given the sessions listing returns a session the registry does not contain, then it appears on the Sessions tab.
+- **AC-51** Given an idle background session, when `ctrl-x` is confirmed, then `claude rm <id>` is run; for a working one, `claude stop <id>`.
+- **AC-52** Given a shell that starts in a project directory, when auto-launch is evaluated with default settings, then the picker is not shown; given the home directory, it is.
 
 ## 8. Assumptions & open questions
 
@@ -273,6 +289,10 @@ All numbers are targets to be measured, not measurements.
 | 32 | "Other" is defined as plain folders and someone else's clones. | Anything not on the user's GitHub and not their own git repo. | A repo expected under Local appears under Other; adjust `owners` in the configuration. |
 | 33 | The home row appears only on the All and Local tabs. | It is machine-level work, not a repository. | Missing from GitHub and Other, as intended. |
 | 34 | A repo whose remote owner is not in `owners` is "someone else's" even if it is the user's fork. | Use `owners` to add further accounts. | A fork under another account shows `◇`. |
+| 35 | `ctrl-l` skips sessions that are open in another terminal, headless, orphaned or stale, and picks the next resumable one. | Matches the documented behaviour that `--continue` refuses when the latest conversation is running in the background. | The "most recent" session by activity is not the one resumed; the preview shows which one will be. |
+| 36 | The supported listing (`claude agents --json`) is treated as authoritative for running sessions; the registry and transcripts are enrichment. | Claude documents the listing as the supported interface and calls the transcript format internal. | If the listing omits a session type, the registry still shows it. |
+| 37 | Quick terminal windows start in the home directory, so they still show the picker under the default auto-launch scope. | Accept; Esc dismisses it. | Set `CLAUDE_HUB_AUTOSTART=0` to stop it everywhere. |
+| 38 | First launch into a folder Claude has not seen shows Claude's own workspace-trust dialog. | Normal Claude behaviour; there is no supported flag to skip it. | None. |
 
 ## 9. Requirements report
 
