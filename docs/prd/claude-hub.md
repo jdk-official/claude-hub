@@ -128,6 +128,7 @@ Sessions, worktrees and statistics (added 2026-10-13)
 - **FR-52** The header shall show a tab bar with a count per tab and the current tab marked.
 - **FR-53** The launcher shall open on the tab named by the `start_tab` configuration key (default `all`), or on Sessions when started with `--sessions`.
 - **FR-54** The launcher shall never give fzf an empty list; an empty tab shall show one inert placeholder row that Enter, `ctrl-l` and `ctrl-x` ignore.
+- **FR-55** While the Sessions tab is shown, the header shall carry a key to the session glyphs (working, attached, detached, terminal, headless, orphan, stale, past) in lines short enough for a 50-column terminal, each session row shall begin with its state glyph, and the key shall also appear on the home dashboard and at the end of `claude-hub sessions`.
 - **FR-48** When starting `claude`, the launcher shall add the same project-dashboard mod flag the user's `claude` shell function adds.
 
 ## 4a. Interface layout (mock-up reviewed and accepted by the user, 2026-10-13)
@@ -232,6 +233,7 @@ All numbers are targets to be measured, not measurements.
 - **AC-42** When `alt-s` is pressed on All, the Sessions tab shall be shown; when `alt-3` is pressed, the GitHub tab shall be shown.
 - **AC-43** Given `start_tab = "github"` in the configuration, when the picker opens, then the GitHub tab is shown.
 - **AC-44** Given a tab with no rows, when it is selected, then a placeholder row is shown, no rows from the previous tab remain, and the next tab key still works.
+- **AC-45** Given the Sessions tab, when it is shown, then the header lists all eight glyphs with their names, every legend line is at most 44 characters, and each session row begins with the glyph of its state.
 
 ## 8. Assumptions & open questions
 

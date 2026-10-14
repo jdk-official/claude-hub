@@ -93,6 +93,9 @@ Prompted by: "make it clearer whether something is in GitHub, local or other".
   someone else's clone is `◇` (all glyphs single-width); the state text is capped so it cannot push the origin off
   screen; the origin column sits before the state; long worktree names drop their parent's prefix; on a tab where
   every row has the same origin the column is dropped.
+- Session glyph key (asked for after use): two short header lines on the Sessions tab, also on the dashboard
+  and at the end of `claude-hub sessions`; session rows now lead with their state glyph so it survives a narrow
+  pane; headless uses a single-width glyph (`◈`) because `⚙` rendered double-width.
 - Not done from the brainstorm: colour by source, section dividers, a per-row footer ("enter: clone" vs "open").
 
 ## Later

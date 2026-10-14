@@ -433,6 +433,16 @@ class E2E(unittest.TestCase):
                       "sessions view", 8)
         self.settle()
 
+    def test_sessions_tab_has_a_glyph_key(self):
+        self.open_sessions_view()
+        screen = self.screen()
+        for word in ("▶ working", "◉ attached", "○ detached", "▣ terminal", "◈ headless", "⚠ orphan", "✗ stale", "· past"):
+            self.assertIn(word, screen)
+        self.settle()
+        self.key("M-1")
+        self.wait_for(lambda: "repo>" in self.screen() and "[All" in self.screen(), "back to All", 8)
+        self.assertNotIn("◈ headless", self.screen().split("repo>")[0])     # the key belongs to the Sessions tab
+
     def test_sessions_tab_and_back_to_all(self):
         self.open_sessions_view()
         screen = self.screen()
@@ -499,7 +509,8 @@ class E2E(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("Overnight build", r.stdout)
         self.assertIn("Fix the login bug", r.stdout)
-        self.assertIn("sessions:", r.stdout.splitlines()[-1])
+        self.assertIn("sessions:", r.stdout)                 # the summary line
+        self.assertIn("▶ working", r.stdout.splitlines()[-1])  # followed by the glyph key
 
 
     # --- badges and worktrees -----------------------------------------------
