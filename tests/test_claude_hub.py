@@ -1343,5 +1343,54 @@ class SourceTabs(Tmp):
         self.assertIn("start_tab", warn)
 
 
+class SessionLegend(Tmp):
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.dict(os.environ, {"CLAUDE_HUB_MODE_STATE": os.path.join(self.tmp, "mode.state"),
+                                         "CLAUDE_HUB_CLAUDE_DIR": os.path.join(self.tmp, "claude")})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_legend_names_every_state_with_its_own_glyph(self):
+        text = hub.session_legend()
+        for state, glyph in hub.SESSION_GLYPH.items():
+            self.assertIn(f"{glyph} {state}", text)
+        self.assertEqual(set(hub.SESSION_LEGEND_ORDER), set(hub.SESSION_GLYPH))
+
+    def test_legend_lines_each_fit_a_narrow_pane(self):
+        lines = hub.session_legend_lines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all(len(l) <= 44 for l in lines), lines)
+        self.assertEqual(" ".join(lines), hub.session_legend())
+
+    def test_session_rows_lead_with_the_state_glyph(self):
+        s = {"sid": "s-1", "job": "j", "name": "My session", "cwd": "/w", "kind": "bg", "state": "orphan",
+             "status": "", "pid": 5, "tty": "", "updated": 1, "file": ""}
+        f = hub.session_lines([s])[0].split("\t")
+        self.assertTrue(f[1].startswith("⚠ My session"))
+        self.assertEqual(f[6], "My session")                      # the raw name is untouched
+
+    def test_legend_is_in_the_header_only_on_the_sessions_tab(self):
+        cfg = dict(hub.DEFAULT_CONFIG)
+        hub.set_tab("all")
+        self.assertNotIn(hub.session_legend_lines()[0], "\n".join(hub.header_lines({}, cfg, None, False, [])))
+        hub.set_tab("sessions")
+        header = hub.header_lines({}, cfg, None, False, [])
+        for line in hub.session_legend_lines():
+            self.assertIn(line, header)
+        self.assertLess(header.index(hub.session_legend_lines()[-1]), len(header) - 1)   # above the tab bar
+
+    def test_legend_is_on_the_dashboard(self):
+        hub.save_cache_section(stats={"computed_at": 1, "days": {}, "repo_weeks": {}, "partial": 0})
+        with mock.patch.object(hub, "CACHE_DIR", self.cache):
+            self.assertIn("⚠ orphan", hub.dashboard_text(200))
+
+    def test_text_list_ends_with_the_legend(self):
+        r = subprocess.run([sys.executable, HUB, "sessions"], capture_output=True, text=True,
+                           env=dict(os.environ, HOME=self.tmp, CLAUDE_HUB_CACHE_DIR=self.cache))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip().splitlines()[-1], hub.session_legend())
+
+
 if __name__ == "__main__":
     unittest.main()

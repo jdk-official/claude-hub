@@ -765,6 +765,7 @@ def dashboard_text(width=60, today=None):
     out.append("")
     out.append(wrap("Source: ◆ local+GitHub  ⌂ local only  ◌ GitHub only  ◇ someone else's  ▫ folder  ↳ worktree", width))
     out.append(wrap("Markers: ★ pinned  ●N dirty files  ↑N ahead  ⎇N worktrees  ▶N sessions  PRN open PRs", width))
+    out.append(wrap("Sessions: " + session_legend(), width))
     return "\n".join(out)
 
 
@@ -1084,7 +1085,7 @@ def heatmap(days, today, weeks=12, color=False):
 
 # --- Sessions: open, background, orphaned and past Claude Code sessions ------
 
-SESSION_GLYPH = {"working": "▶", "attached": "◉", "detached": "○", "terminal": "▣", "headless": "⚙",
+SESSION_GLYPH = {"working": "▶", "attached": "◉", "detached": "○", "terminal": "▣", "headless": "◈",
                  "orphan": "⚠", "stale": "✗", "past": "·"}
 SESSION_RANK = {"working": 0, "attached": 1, "detached": 2, "terminal": 3, "headless": 4, "orphan": 5,
                 "stale": 6, "past": 7}
@@ -1099,6 +1100,18 @@ SESSION_EXPLAIN = {
     "past": "finished session; resumable from its transcript",
 }
 PAST_LIMIT = 40
+SESSION_NAME_MAX = 30
+SESSION_LEGEND_ORDER = ("working", "attached", "detached", "terminal", "headless", "orphan", "stale", "past")
+
+
+def session_legend_lines():
+    """The key to the session glyphs as two short lines, so it fits even a ~50-column terminal."""
+    items = [f"{SESSION_GLYPH[s]} {s}" for s in SESSION_LEGEND_ORDER]
+    return [" ".join(items[:4]), " ".join(items[4:])]
+
+
+def session_legend():
+    return " ".join(session_legend_lines())
 
 
 def claude_dir():
@@ -1276,18 +1289,20 @@ def session_slug(s):
 
 
 def session_lines(sessions):
-    """Same 7-field layout as project rows so the picker bindings stay identical."""
+    """Same 7-field layout as project rows so the picker bindings stay identical. The state glyph leads the
+    name (as the source glyph does for projects) so it stays visible in a narrow pane."""
     rows = []
     for s in sessions:
         loc = s["tty"].replace("/dev/", "") if s["tty"] else ""
         tag = "#bg" if s["kind"] in ("bg", "background") else ("#past" if s["state"] == "past" else "#terminal")
-        rows.append((s, CONTROL_RE.sub(" ", s["name"]), tag, loc))
+        rows.append((s, SESSION_GLYPH[s["state"]] + " " + short(CONTROL_RE.sub(" ", s["name"]), SESSION_NAME_MAX), tag, loc))
     nw = max([len(r[1]) for r in rows] or [0])
     tw = max([len(r[2]) for r in rows] or [0])
     lines = []
     for s, name, tag, loc in rows:
-        cols = (f"{SESSION_GLYPH[s['state']]} {s['state']:<8}  {age(s['updated']):<9}  {loc:<8}  {s['cwd']}").rstrip()
-        lines.append("\t".join([s["sid"], name.ljust(nw), tag.ljust(tw), cols, s["cwd"], session_slug(s), name]))
+        cols = (f"{s['state']:<8} {age(s['updated']):<9} {loc:<7} {s['cwd']}").rstrip()
+        lines.append("\t".join([s["sid"], name.ljust(nw), tag.ljust(tw), cols, s["cwd"], session_slug(s),
+                                 CONTROL_RE.sub(" ", s["name"])]))
     return lines
 
 
@@ -1592,6 +1607,8 @@ def header_lines(cache, cfg, warn, gh_present, entries=None):
         lines.append(f"tag filter: #{tag}  (ctrl-t cycles tags)")
     if warn:
         lines.append(warn)
+    if current_tab() == "sessions":
+        lines.extend(session_legend_lines())
     lines.append(tab_bar(entries, cfg, current_tab()))
     return lines
 
@@ -1782,6 +1799,7 @@ def main(argv):
         for s in load_sessions():
             print(f"{SESSION_GLYPH[s['state']]} {s['state']:<8} {age(s['updated']):<9} {s['name'][:38]:<38} {s['cwd']}")
         print(sessions_summary())
+        print(session_legend())
         return 0
     if "--kick-refresh" in args:   # ctrl-r: start a detached refresh and return immediately
         spawn_refresh()
