@@ -279,6 +279,7 @@ def save_cache_section(**sections):
 
 
 def gh_status_line(cache, gh_present, now=None):
+    """A short status for the header, or "" when GitHub data is healthy and fresh."""
     now = now or time.time()
     gh = cache.get("gh") or {}
     if not gh_present:
@@ -293,7 +294,7 @@ def gh_status_line(cache, gh_present, now=None):
     n = len(gh.get("repos", []))
     if now - gh.get("fetched_at", 0) > STALE_SECS:
         return f"GitHub: {n} repos, cache STALE ({ago})"
-    return f"GitHub: {n} repos, cached {ago}"
+    return ""      # healthy and fresh: nothing to say; the line only appears when something needs your attention
 
 
 # --- GitHub fetch -----------------------------------------------------------
@@ -1761,7 +1762,10 @@ def header_lines(cache, cfg, warn, gh_present, entries=None):
     if entries is None:
         entries = gather(cfg)[1]
     tab = current_tab()
-    lines = [tab_bar(entries, cfg, tab), gh_status_line(cache, gh_present)]
+    lines = [tab_bar(entries, cfg, tab)]
+    gh_line = gh_status_line(cache, gh_present)
+    if gh_line:                       # only when GitHub data is loading, missing, unreachable or stale
+        lines.append(gh_line)
     tag = current_tag()
     if tag:
         lines.append(f"tag filter: #{tag}  (ctrl-t cycles tags)")
