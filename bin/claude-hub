@@ -1678,22 +1678,6 @@ def clone_repo(slug, name):
 STATS_COMPUTING = "stats: computing… this fills in by itself in a few seconds"
 
 
-def stats_header_short(cache, today=None):
-    """One line for the header; the full figures are on the home dashboard and in `claude-hub stats`."""
-    s = cache.get("stats")
-    if not s:
-        return STATS_COMPUTING
-    today = today or date.today()
-    days = s.get("days", {})
-    cur, _best = streaks(active_dates(days), today)
-    t = period_totals(days, today, today)
-    w = period_totals(days, monday(today), today)
-    tb, wb = sum(period_bulk(days, today, today)), sum(period_bulk(days, monday(today), today))
-    note = " · partial" if s.get("partial") else ""
-    return (f"streak {cur}d · today {t[0]}c +{kfmt(t[2])}/-{kfmt(t[3])}{f' (+{kfmt(tb)} bulk)' if tb else ''}"
-            f" · week {w[0]}c +{kfmt(w[2])}/-{kfmt(w[3])}{f' (+{kfmt(wb)} bulk)' if wb else ''}{note}")
-
-
 def stats_lines_compact(cache, today=None):
     """The dashboard's figures as short lines (each fits a ~46 column preview)."""
     s = cache.get("stats")
@@ -1772,11 +1756,12 @@ def repo_tags(e, cfg):
 
 
 def header_lines(cache, cfg, warn, gh_present, entries=None):
-    """Tab bar first (it is what you act on), then one short stats line; detail lives in the dashboard preview."""
+    """Tab bar first (it is what you act on). Statistics are not repeated here: the home row's dashboard, which is
+    selected on opening, is the one place for streak, today and week."""
     if entries is None:
         entries = gather(cfg)[1]
     tab = current_tab()
-    lines = [tab_bar(entries, cfg, tab), stats_header_short(cache), gh_status_line(cache, gh_present)]
+    lines = [tab_bar(entries, cfg, tab), gh_status_line(cache, gh_present)]
     tag = current_tag()
     if tag:
         lines.append(f"tag filter: #{tag}  (ctrl-t cycles tags)")

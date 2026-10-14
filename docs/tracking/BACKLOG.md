@@ -106,7 +106,8 @@ sessions behave.
 - Worktrees collapsed under their parent (`⎇N`, header note, `ctrl-w`, `show_worktrees`); stops two projects
   from taking most of the list.
 - List-first layout: preview 38% beside the list, stacked below until ~121 columns, so the origin is visible.
-- Header: tab bar first, one short stats line; the detailed stats stay on the dashboard.
+- Header: tab bar first. The stats line was removed from the left pane afterwards (it duplicated the home
+  dashboard, which is selected on opening); streak, today and week appear once, on the dashboard.
 - Ages in minutes and hours; wrong "see next launch" copy fixed; `alt-h` help with both glyph keys.
 - `ctrl-l` resumes a specific session by id (never `--continue`, which refuses when the latest conversation is
   running in the background); the preview names the target.

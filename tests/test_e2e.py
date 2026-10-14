@@ -589,13 +589,14 @@ class E2E(unittest.TestCase):
 
 
     # --- review round ---------------------------------------------------------
-    def test_header_leads_with_the_tab_bar_and_one_stats_line(self):
+    def test_header_leads_with_the_tab_bar_and_does_not_repeat_the_dashboard_stats(self):
         self.start()
         self.ready()
+        self.wait_for(lambda: "dashboard" in self.screen(), "dashboard preview (home row is selected)")
         lines = self.screen().splitlines()
         header = [l.split("│")[0].rstrip() for l in lines[: self.prompt_row()]]
         self.assertTrue(header[0].lstrip().startswith("◂"), header)
-        self.assertEqual(sum(1 for l in header if "streak" in l or l.lstrip().startswith("stats:")), 1)
+        self.assertFalse(any("streak" in l for l in header), header)         # not duplicated in the left pane
 
     def test_ctrl_w_expands_and_collapses_worktrees(self):
         alpha = os.path.join(self.root, "alpha")
