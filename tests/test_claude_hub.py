@@ -139,8 +139,20 @@ class Cache(Tmp):
         self.assertIn("unavailable, local only", f({"gh": {"ok": False, "fetched_at": now}}, True, now))
         self.assertIn("unavailable (cached 2h ago)",
                       f({"gh": {"ok": False, "fetched_at": now - 7200, "repos": [{}]}}, True, now))
-        self.assertIn("cached 5m", f({"gh": {"ok": True, "fetched_at": now - 300, "repos": [{}]}}, True, now))
+        self.assertEqual(f({"gh": {"ok": True, "fetched_at": now - 300, "repos": [{}]}}, True, now), "")   # healthy: silent
+        self.assertEqual(f({"gh": {"ok": True, "fetched_at": now - 20 * 3600, "repos": [{}]}}, True, now), "")
         self.assertIn("STALE", f({"gh": {"ok": True, "fetched_at": now - 90000, "repos": []}}, True, now))
+
+    def test_header_shows_the_github_line_only_when_something_is_wrong(self):
+        cfg = dict(hub.DEFAULT_CONFIG)
+        now = time.time()
+        os.environ.pop("CLAUDE_HUB_MODE_STATE", None)
+        healthy = {"gh": {"ok": True, "fetched_at": now - 60, "repos": [{"name": "a", "owner": "o"}]}}
+        self.assertFalse(any(l.startswith("GitHub") for l in hub.header_lines(healthy, cfg, None, True, [])))
+        for bad, word in (({}, "loading"), ({"gh": {"ok": False, "fetched_at": now, "repos": []}}, "unavailable"),
+                          ({"gh": {"ok": True, "fetched_at": now - 90000, "repos": []}}, "STALE")):
+            self.assertTrue(any(l.startswith("GitHub") and word in l for l in hub.header_lines(bad, cfg, None, True, [])), word)
+        self.assertTrue(any("not installed" in l for l in hub.header_lines({}, cfg, None, False, [])))
 
 
 def entry(name, slug="", ts=0, dirty=0, ahead=0, gh=None, local=True, origin="x"):
@@ -690,7 +702,7 @@ class ReviewRegressions(Tmp):
         self.assertIn("partial", hub.stats_header({"stats": st})[1])
 
     def test_l2_no_double_ago(self):
-        line = hub.gh_status_line({"gh": {"ok": True, "fetched_at": 100.0, "repos": [{}]}}, True, now=110.0)
+        line = hub.gh_status_line({"gh": {"ok": False, "fetched_at": 100.0, "repos": [{}]}}, True, now=110.0)
         self.assertNotIn("ago ago", line)
         self.assertIn("just now", line)
 

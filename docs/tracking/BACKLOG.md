@@ -108,6 +108,8 @@ sessions behave.
 - List-first layout: preview 38% beside the list, stacked below until ~121 columns, so the origin is visible.
 - Header: tab bar first. The stats line was removed from the left pane afterwards (it duplicated the home
   dashboard, which is selected on opening); streak, today and week appear once, on the dashboard.
+- The "GitHub: N repos, cached just now" line was removed when healthy; it appears only when GitHub is loading,
+  unreachable, stale or `gh` is missing.
 - Ages in minutes and hours; wrong "see next launch" copy fixed; `alt-h` help with both glyph keys.
 - `ctrl-l` resumes a specific session by id (never `--continue`, which refuses when the latest conversation is
   running in the background); the preview names the target.

@@ -304,7 +304,7 @@ class E2E(unittest.TestCase):
         self.start()
         self.ready()
         lines = self.screen().splitlines()
-        header_row = next(i for i, l in enumerate(lines) if "GitHub:" in l)
+        header_row = next(i for i, l in enumerate(lines) if l.lstrip().startswith("◂"))   # the tab bar
         self.assertLess(header_row, self.prompt_row())
         footer = "\n".join(lines)
         for key in ("enter", "ctrl-l", "ctrl-r", "ctrl-t", "esc"):
