@@ -10,7 +10,10 @@ Glossary: **scan root** = a directory whose immediate subdirectories claude-hub 
 - Every project the user owns locally or on GitHub is reachable by typing a few characters, not only the 10 most recent.
 - Projects that need attention (dirty, unpushed, open PR) are visible at the top without inspecting each one.
 - Steady building is made visible: the header shows streak and today/week activity, each repo shows an 8-week sparkline, and `claude-hub stats` shows a 12-week heatmap, all computed offline.
-- claude-hub remains a safe launcher: it never changes repository history or state.
+- Work that is already running is visible and reachable: open, background, orphaned and past Claude sessions are listed, badged on their project, and can be attached, resumed or cleaned up from the same picker.
+- Worktrees do not clutter the list or the numbers: they sit under their parent project, and bulk imports do not drown real activity in the line counts.
+- The picker is where every new Ghostty terminal starts, and looking at a project never changes what the list shows.
+- claude-hub remains a safe launcher: it never changes repository history or state, and it only stops a Claude session after an explicit, confirmed request.
 
 ## 2. Scope - in / out
 
@@ -26,11 +29,15 @@ Glossary: **scan root** = a directory whose immediate subdirectories claude-hub 
 - Resume vs new session (S3).
 - Narrow-terminal layout, graceful degradation, clone confirmation (M3-M8, S2).
 - Gamification G1 (streak), G2 (today/week vs 4-week average), G3 (8-week sparkline), G8 (`claude-hub stats` 12-week heatmap).
+- Sessions view (added 2026-10-13): `ctrl-s` toggle, session classification, attach/resume, confirmed clean-up, `claude-hub sessions` text list, session badges on project and home rows.
+- Worktrees grouped under their parent project; bulk-commit lines reported separately.
+- Auto-launch in new Ghostty shells via a shell-profile block (opt out with CLAUDE_HUB_AUTOSTART=0).
+- Project, command, repo, cache and configuration names are `claude-hub` (renamed 2026-10-13).
 
 **Out**
 - Gamification deferred: ship counter, badges and milestones, weekly goal, finish-line nudge.
-- Not selected: `ctrl-o` / `ctrl-s` actions (S4), new-scratch-dir action (C3), `--list --json` and `-q` (C4), Hyprland keybind (C5), login pre-warm (C6), per-repo `claude_args` (open question 12).
-- Non-goals: file manager, project/task tracker, git client (no commit, push, pull, rebase, branch switch, PR creation), multi-user/server/daemon, Claude session browser, GUI or TUI framework beyond fzf, mouse UI, secrets/token/SSH/`gh` auth management, non-GitHub forges, Windows/macOS, background auto-clone/pull/delete, editing Hyprland/Ghostty configs.
+- Not selected: `ctrl-o` open-in-browser and plain-shell actions (S4), new-scratch-dir action (C3), `--list --json` and `-q` (C4), Hyprland keybind (C5), login pre-warm (C6), per-repo `claude_args` (open question 12).
+- Non-goals: file manager, project/task tracker, git client (no commit, push, pull, rebase, branch switch, PR creation), multi-user/server/daemon, Claude transcript viewer or editor (the Sessions view lists, attaches, resumes and cleans up sessions but never edits them), GUI or TUI framework beyond fzf, mouse UI, secrets/token/SSH/`gh` auth management, non-GitHub forges, Windows/macOS, background auto-clone/pull/delete, editing Hyprland/Ghostty configs.
 
 ## 3. Decisions already made
 
@@ -46,6 +53,11 @@ Glossary: **scan root** = a directory whose immediate subdirectories claude-hub 
 | D-8 | Needs-attention repos (dirty, unpushed, open PR) outrank newer clean repos; pinned first (resolves row 13). | Confirmed by the user, 2026-10-13 |
 | D-9 | Weeks run Monday to Sunday; "this week" is week-to-date (resolves row 6). | Confirmed by the user, 2026-10-13 |
 | D-10 | Lines changed = insertions plus deletions from numstat, merge commits excluded (resolves row 7). | Confirmed by the user, 2026-10-13 |
+| D-12 | Sessions are read from Claude Code's own registry and transcripts; pre-warmed spare sessions and transcripts with no user message are hidden; a process is only trusted when its registry start time matches the real one. | Built and verified against the user's live sessions, 2026-10-13 |
+| D-13 | Session badges and worktree grouping are display only and never change ordering; viewing a project writes no cache that affects order or triggers a reload. | User report "viewing a project bumps it up", 2026-10-13 |
+| D-14 | Auto-launch is a shell-profile block, not Ghostty `initial-command`, because `initial-command` never fires in a long-running single-instance Ghostty. | Verified, 2026-10-13 |
+| D-15 | A single commit above 5000 changed lines is a bulk import: it counts as a commit but its lines are reported separately. Worktrees cannot be excluded from statistics because they share one commit database. | Measured on `daily-hub`: 57 identical commits from every checkout; one 54,814-line commit of 74,960 lines, 2026-10-13 |
+| D-16 | The command and project are named `claude-hub`; environment variables are `CLAUDE_HUB_*`. | User request, 2026-10-13 |
 | D-11 | Keys: `ctrl-r` refresh, `ctrl-l` resume (`claude --continue`), `ctrl-t` tag filter; `ctrl-g` is left as fzf's abort alias; `ctrl-l` overrides fzf's clear-screen (fzf 0.74.3). | Confirmed by the user, 2026-10-13 |
 
 ## 4. Functional requirements
@@ -53,7 +65,7 @@ Glossary: **scan root** = a directory whose immediate subdirectories claude-hub 
 Cache, refresh, degradation
 - **FR-1** When claude-hub starts, the launcher shall render the picker from the cache in `~/.cache/claude-hub/` without waiting for any GitHub call.
 - **FR-2** While the picker is open, the launcher shall refresh GitHub data and local git state in the background and update the list in place when results arrive.
-- **FR-3** When the user presses `ctrl-r`, the launcher shall re-run the GitHub fetch and the local scan and redraw the list.
+- **FR-3** When the user presses `ctrl-r`, the launcher shall start the GitHub fetch and statistics refresh in the background without blocking input, and redraw the list when it finishes.
 - **FR-4** If the cache is missing, corrupt, or unreadable, then the launcher shall ignore it and rebuild it without exiting.
 - **FR-5** If the cache is older than 24 hours, then the launcher shall mark it as stale in the header.
 - **FR-6** If `gh` is missing, unauthenticated, offline, or times out, then the launcher shall list local repos and state in one header line that GitHub is unavailable.
@@ -69,12 +81,12 @@ Listing, search, organisation
 - **FR-13** Where a repo is listed as hidden in `~/.config/claude-hub/config`, the launcher shall omit it from the list.
 - **FR-14** Where a repo is listed as pinned in `~/.config/claude-hub/config`, the launcher shall sort it ahead of all unpinned repos.
 - **FR-15** When the user presses the tag-filter key, the launcher shall restrict the list to repos carrying the selected tag from `~/.config/claude-hub/config`.
-- **FR-16** When the list is built or refreshed, the launcher shall order pinned repos first, then repos that are dirty, have unpushed commits, or have an open PR, then the remainder by most recent activity (latest of last commit and last push).
+- **FR-16** When the list is built or refreshed, the launcher shall order pinned repos first, then repos that (or whose worktrees) are dirty, have unpushed commits, or have an open PR, then the remainder by most recent activity (latest of last commit and last push).
 
 Preview
 - **FR-17** When a repo is highlighted, the launcher shall show its last 3 commits as subject and age in the preview.
 - **FR-18** When a repo is highlighted, the launcher shall show the first 10 lines of its HANDOVER.md, or of its README when no HANDOVER.md exists, read live from disk.
-- **FR-19** When a repo is highlighted, the launcher shall show its open PR and issue counts with the titles of the top 3, fetched lazily and cached.
+- **FR-19** The launcher shall take open PR and issue counts from the background GitHub listing (so ordering is stable from the first frame), and when a repo is highlighted shall show the titles of the top 3, fetched lazily and cached separately from the list.
 - **FR-20** When the preview renders, the launcher shall word-wrap description and paths to the pane width without clipping.
 - **FR-21** While the terminal is 60 columns wide or narrower, the launcher shall show each row on one line with the repo name intact and place the preview below the list.
 - **FR-22** While the terminal is 100 columns wide or wider, the launcher shall place the preview beside the list.
@@ -95,6 +107,20 @@ Gamification
 - **FR-31** When the user runs `claude-hub stats`, the launcher shall print a 12-week contribution heatmap to the terminal.
 - **FR-32** The launcher shall compute all statistics from local git history and make no network call for them.
 - **FR-33** The launcher shall count each calendar day with at least one qualifying commit once toward streaks and averages, regardless of the number of commits that day.
+
+Sessions, worktrees and statistics (added 2026-10-13)
+- **FR-37** When the user presses `ctrl-s`, the launcher shall switch the list between projects and Claude sessions, updating the prompt, header and list, and keeping the picker open.
+- **FR-38** The launcher shall classify each Claude session as working, attached, detached, terminal, headless, orphan, stale or past from the registry and transcripts, hiding pre-warmed spare sessions and transcripts that contain no user message.
+- **FR-39** The launcher shall treat a registry entry as running only when its recorded process start time equals the live process's start time, so a reused process id is never reported as a session.
+- **FR-40** When Enter is pressed on a background session, the launcher shall run `claude attach`; on a past session, `claude --resume` in its recorded directory (the home directory with a notice if it no longer exists); on terminal, headless, orphan and stale sessions it shall explain and not launch.
+- **FR-41** When `ctrl-x` is pressed on a session, the launcher shall ask for confirmation before stopping a background session, signalling an orphan whose process id and start time match the registry, or removing a stale registry entry, and shall touch nothing else.
+- **FR-42** The launcher shall show a one-line sessions summary in the header, and a running-session count on each project row (and the home row) for sessions whose directory is inside it, without changing the list order.
+- **FR-43** The command `claude-hub sessions` shall print the session list and summary as plain text.
+- **FR-44** The launcher shall list a linked git worktree directly beneath its parent project marked with an indent, show a worktree count on the parent, not de-duplicate a worktree against its parent, and let a parent inherit its worktrees' recency and needs-attention state.
+- **FR-45** The launcher shall count a commit whose changed lines exceed 5000 as a commit but report its lines separately as bulk lines.
+- **FR-46** Highlighting a project shall not change the list order and shall not trigger a list reload.
+- **FR-47** When a new interactive shell starts inside Ghostty and `CLAUDE_HUB_AUTOSTART` is not `0` and `CLAUDE_HUB_STARTED` is unset, the shell profile shall run `claude-hub` once; Esc shall leave the user at the shell.
+- **FR-48** When starting `claude`, the launcher shall add the same project-dashboard mod flag the user's `claude` shell function adds.
 
 ## 4a. Interface layout (mock-up reviewed and accepted by the user, 2026-10-13)
 
@@ -138,6 +164,7 @@ All numbers are targets to be measured, not measurements.
 - **NFR-5** Rows and header lines render without wrapping or clipping at 50 columns; layout designed for a ~384 px tiled window (45-55 columns, unverified).
 - **NFR-6** `claude-hub stats` output is at most 80 columns wide.
 - **NFR-7** The cache contains no tokens or credentials; only repo metadata, PR/issue titles and counts, and aggregate commit statistics.
+- **NFR-8** Building the session list reads the registry and a bounded number of transcript heads (40 past sessions) and never scans whole transcripts, so a multi-megabyte transcript does not slow the picker.
 
 ## 6. Constraints
 
@@ -149,6 +176,7 @@ All numbers are targets to be measured, not measurements.
 - **C-6** Primary layout target is a narrow tiled Ghostty window; GitHub only; Linux only (user session; non-goals).
 - **C-7** Clone target is always `/mnt/data/github/<name>`.
 - **C-8** Minimum Python 3.11 (assumed, row 12).
+- **C-9** Stopping anything is limited to the explicit confirmed actions in FR-41; claude-hub never kills or deletes a session on its own initiative.
 
 ## 7. Acceptance criteria
 
@@ -179,6 +207,17 @@ All numbers are targets to be measured, not measurements.
 - **AC-25** When the query is `main`, no repo shall match solely because its branch is `main`.
 - **AC-26** While the picker is open, the key hint footer shall list the Enter, `ctrl-l`, `ctrl-r`, `ctrl-t` and `esc` actions.
 - **AC-27** Given a repo that is dirty, ahead of upstream, has an open PR, or is GitHub-only, when the list renders, then the row shows the matching marker from section 4a.
+- **AC-28** Given background, terminal, headless, orphan, stale and past sessions in the registry and transcripts, when `ctrl-s` is pressed, then each row shows its state and the header summary counts them.
+- **AC-29** Given a registry entry whose recorded start time differs from the live process, when sessions are classified, then it is stale, not running.
+- **AC-30** Given a spare (pre-warmed) session and a transcript with no user message, when sessions are listed, then neither appears.
+- **AC-31** When Enter is pressed on a background session, `claude attach <id>` shall be run; on a past session, `claude --resume <id>` shall be run in its directory.
+- **AC-32** When `ctrl-x` is pressed on a stale entry and the user answers anything other than "y", the registry file shall still exist; after "y" it shall be removed.
+- **AC-33** Given a print-mode (`claude -p`) session with no terminal, when sessions are classified, then it is headless and not orphaned.
+- **AC-34** Given a session whose directory is inside a project, when the list renders, then that project's row shows its count, and the order is identical with and without the session.
+- **AC-35** Given a project with a linked worktree that shares its remote, when the list renders, then both are listed, the worktree directly beneath its parent, and Enter on the worktree launches `claude` in the worktree directory.
+- **AC-36** Given a commit of more than 5000 changed lines, when statistics are computed, then the day's commit count includes it and its lines appear in the bulk figure, not the ordinary lines.
+- **AC-37** When every project is highlighted in turn, the list order shall be unchanged.
+- **AC-38** Given a new Ghostty window opened into a running Ghostty, when its shell starts, then the picker is shown.
 
 ## 8. Assumptions & open questions
 
@@ -209,10 +248,16 @@ All numbers are targets to be measured, not measurements.
 | 23 | Timeout and speed numbers are brainstorm targets, not measurements; 3 s per-repo timeout is a proposal. | Adopt as NFR targets; measure before sign-off. | Targets may be unattainable on cold cache with many repos. |
 | 24 | Per-repo `claude_args` and extra flags (open question 12). | No flags; not implemented. | User must pass flags manually inside claude. |
 | 25 | Sparkline and heatmap glyph rendering in the user's Ghostty font. | Use Unicode block characters (▁-█) and Nerd Font glyphs (as in the user's status bar), not emoji, to avoid fzf mis-measuring widths; no ASCII fallback. | Misrendered cells; add ASCII fallback. |
+| 26 | What counts as an orphan. | An interactive `cli` session whose terminal is gone. Print-mode and SDK sessions (`entrypoint` other than `cli`, or `-p` / `--print` on the command line) are headless, not orphans; this was found when a real `claude -p` run was first reported as an orphan. | A genuinely abandoned print-mode run is not flagged. |
+| 27 | A session is "attached" when an interactive registry entry's `parkedJobId` equals a background session's `jobId` (observed behaviour of Claude Code 2.1.x, not a documented contract). | Use it for the attached state and for the terminal shown. | If Claude Code changes the registry shape, attached sessions show as detached until updated. |
+| 28 | Registry location and shape: `~/.claude/sessions/*.json` and `~/.claude/projects/*/*.jsonl`, also observed rather than documented. | Parse defensively; a malformed file is skipped. | Sessions may not appear after a Claude Code change. |
+| 29 | Bulk threshold of 5000 changed lines in one commit. | Constant, not configurable yet. | A legitimate large feature commit is reported as bulk. |
+| 30 | Tabs and splits are also new shells and therefore also open the picker. | Accept; Esc dismisses it. | If annoying, limit auto-launch to new windows (not selected). |
+| 31 | Past sessions limited to the 40 most recent transcripts. | Keeps the view fast on large histories. | Older sessions are not listed. |
 
 ## 9. Requirements report
 
-Revised 2026-10-13 after the mock-up review: FR-34 to FR-36 and AC-25 to AC-27 were added and FR-11 reworded. The counts in the report below are from the original authoring pass and are now 36 FRs and 27 ACs.
+Revised 2026-10-13 after the mock-up review: FR-34 to FR-36 and AC-25 to AC-27 were added and FR-11 reworded. The counts in the report below are from the original authoring pass. Revised again on 2026-10-14 for the Sessions view, session badges, worktree grouping, bulk lines, auto-launch and the rename: FR-37 to FR-48, AC-28 to AC-38, NFR-8, C-9, decisions D-12 to D-16 and assumption rows 26 to 31 were added, and FR-3, FR-16 and FR-19 were reworded. The totals are now 48 FRs and 38 ACs.
 
 ```json
 {

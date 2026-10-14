@@ -70,6 +70,16 @@ Prompted by: "this is very project focussed; what if I have open sessions, or or
   when pid and registry agree, or removes a stale registry entry. Nothing else is ever touched.
 - Not done: focusing the window that holds a terminal session; showing sessions as a badge on project rows.
 
+## Done: badges, worktrees and bulk lines, built 2026-10-14
+
+- Session badges: a running-session count on each project row and on the home row, display only (never reorders).
+  Found and fixed on real data: a `claude -p` run was shown as an orphan; it is now `headless`.
+- Worktrees are listed beneath their parent (indented, `⎇N` on the parent), are not de-duplicated against it, and
+  make the parent "needs attention" when dirty. The preview lists a project's other worktrees and live sessions.
+- Bulk lines: commits above 5000 changed lines count as commits but their lines are reported as "(+55k bulk)".
+  Excluding worktrees from statistics was investigated and rejected: all checkouts share one commit database.
+- PRD brought up to date (FR-37 to FR-48, AC-28 to AC-38).
+
 ## Later
 
 - Deferred gamification: ship counter, badges and milestones, weekly goal, finish-line nudge.

@@ -46,6 +46,7 @@ MAX_ROWS = 100
 PREVIEW_WINDOW = "right,45%,wrap,<45(down,40%,wrap)"
 STATS_DAYS = 400
 STATS_TTL = 300
+BULK_LINES = 5000   # a single commit above this is a bulk import (vendored code, generated files)
 STAT_DAYS = 14  # window for line counts; older commits count toward streaks and sparklines only
 IDENTITY_EMAILS = {"jonathan@kyte.me.uk"}
 BLOCKS = "▁▂▃▄▅▆▇█"
@@ -375,8 +376,17 @@ def inspect_dir(root, path):
     name = os.path.basename(path)
     base = {"name": name, "path": path, "root": root, "is_git": False, "ts": 0,
             "branch": "", "dirty": 0, "ahead": 0, "behind": 0, "has_upstream": False,
-            "remote": "", "slug": ""}
-    if os.path.exists(os.path.join(path, ".git")):
+            "remote": "", "slug": "", "worktree_of": ""}
+    gitpath = os.path.join(path, ".git")
+    if os.path.isfile(gitpath):          # a linked worktree: ".git" is a file pointing into the parent repo
+        try:
+            with open(gitpath) as f:
+                target = f.read().strip()
+            if target.startswith("gitdir:") and "/.git/worktrees/" in target:
+                base["worktree_of"] = os.path.realpath(target[7:].strip().split("/.git/worktrees/")[0])
+        except OSError:
+            pass
+    if os.path.exists(gitpath):
         base["is_git"] = True
         ts = git(["log", "-1", "--format=%ct"], path)
         base["ts"] = int(ts) if ts.isdigit() else 0
@@ -425,7 +435,8 @@ def build_entries(local, gh_repos, cfg):
     """Merge local dirs and GitHub repos; de-dup by remote slug; drop hidden/archived."""
     entries, by_slug = [], {}
     for l in sorted(local, key=lambda x: x["ts"], reverse=True):
-        key = l["slug"].lower() if l["slug"] else "path:" + l["path"]
+        # a linked worktree shares its parent's remote but is its own place to work: never de-dup it
+        key = l["slug"].lower() if l["slug"] and not l.get("worktree_of") else "path:" + l["path"]
         if key in by_slug:
             continue  # same remote cloned twice: keep the most recently active one
         e = {"name": l["name"], "slug": l["slug"], "path": l["path"], "local": l, "gh": None,
@@ -444,9 +455,37 @@ def build_entries(local, gh_repos, cfg):
                  "ts": parse_ts(g.get("pushedAt")), "origin": g["owner"]}
             by_slug[slug.lower()] = e
             entries.append(e)
+    link_worktrees(entries)
     hidden = {h.lower() for h in cfg["hidden"]}
     return [e for e in entries
             if e["name"].lower() not in hidden and e["slug"].lower() not in hidden]
+
+
+def link_worktrees(entries):
+    """Attach each linked worktree to its parent entry (when the parent is listed) and let the parent
+    inherit its recency, so work happening in a worktree keeps the project where you expect it."""
+    by_real = {os.path.realpath(e["path"]): e for e in entries if e["path"] and not (e["local"] or {}).get("worktree_of")}
+    for e in entries:
+        parent = by_real.get((e["local"] or {}).get("worktree_of") or "")
+        if parent is not None and parent is not e:
+            e["parent"] = parent["path"]
+            parent.setdefault("worktrees", []).append(e)
+            parent["ts"] = max(parent["ts"], e["ts"])
+
+
+def group_worktrees(entries):
+    """Keep the given order, but show each parent's worktrees directly beneath it."""
+    children = {}
+    for e in entries:
+        if e.get("parent"):
+            children.setdefault(e["parent"], []).append(e)
+    out = []
+    for e in entries:
+        if e.get("parent"):
+            continue
+        out.append(e)
+        out.extend(sorted(children.get(e["path"], []), key=lambda w: -w["ts"]))
+    return out
 
 
 # --- P5: ordering and markers -----------------------------------------------
@@ -461,7 +500,9 @@ def pr_count(e, prs=None):
 
 def needs_attention(e, prs):
     l = e["local"]
-    return bool(l and (l["dirty"] > 0 or l["ahead"] > 0)) or pr_count(e, prs) > 0
+    if bool(l and (l["dirty"] > 0 or l["ahead"] > 0)) or pr_count(e, prs) > 0:
+        return True
+    return any(needs_attention(w, prs) for w in e.get("worktrees", []))
 
 
 def pinned_index(e, cfg):
@@ -490,6 +531,13 @@ def markers(e, cfg, prs=None):
         parts.append(f"●{l['dirty']}")
     if l and l["ahead"]:
         parts.append(f"↑{l['ahead']}")
+    if e.get("worktrees"):
+        parts.append(f"⎇{len(e['worktrees'])}")
+    sess = e.get("sess") or {}
+    if sess.get("n"):
+        parts.append(f"▶{sess['n']}")
+    if sess.get("orphan"):
+        parts.append(f"⚠{sess['orphan']}")
     n = pr_count(e, prs)
     if n:
         parts.append(f"PR{n}")
@@ -515,7 +563,8 @@ def state_text(e):
 
 def row_cells(e, cfg, prs=None):
     g = e["gh"] or {}
-    return [e["name"], markers(e, cfg, prs), age(e["ts"]), state_text(e), e["origin"],
+    return [("↳ " if e.get("parent") else "") + e["name"], markers(e, cfg, prs), age(e["ts"]), state_text(e),
+            e["origin"],
             (g.get("visibility") or "").lower(), CONTROL_RE.sub(" ", g.get("description") or "")]
 
 
@@ -652,6 +701,7 @@ def preview_text(path, slug, name, width=60):
                 out.append("")
                 out.extend(wrap(c, width) for c in commits.splitlines())
         out.extend(preview_extra(path, name, width))
+        out.extend(preview_work_here(path, width))
     else:
         out.append(wrap(f"not cloned: Enter will ask before cloning into {CLONE_ROOT}/{name}", width))
     if slug:
@@ -670,6 +720,25 @@ def preview_text(path, slug, name, width=60):
             out.append(f"{fname}:")
             out.extend(wrap(x, width) for x in lines)
     return "\n".join(out)
+
+
+def preview_work_here(path, width):
+    """Sessions running in this project and its other worktrees (display only)."""
+    out = []
+    real = os.path.realpath(path)
+    sess = [s for s in live_sessions() if s["cwd"] and under(os.path.realpath(s["cwd"]), real)]
+    if sess:
+        out += ["", "sessions here:"]
+        for s in sess[:6]:
+            where = (" " + s["tty"].replace("/dev/", "")) if s["tty"] else ""
+            out.append(wrap(f"  {SESSION_GLYPH[s['state']]} {s['state']} · {s['name']}{where}", width))
+    wts = git(["worktree", "list", "--porcelain"], path)
+    paths = [l[9:] for l in wts.splitlines() if l.startswith("worktree ")]
+    others = [w for w in paths if os.path.realpath(w) != real]
+    if others:
+        out += ["", "worktrees:"]
+        out.extend(wrap("  ↳ " + os.path.basename(w), width) for w in others[:6])
+    return out
 
 
 def preview_extra(path, name, width):
@@ -761,10 +830,14 @@ def aggregate(per_repo):
                 d = date.fromisoformat(c["date"])
             except ValueError:
                 continue
-            e = days.setdefault(c["date"], {"c": 0, "ins": 0, "del": 0, "repos": []})
+            e = days.setdefault(c["date"], {"c": 0, "ins": 0, "del": 0, "bulk_ins": 0, "bulk_del": 0, "repos": []})
             e["c"] += 1
-            e["ins"] += c["ins"]
-            e["del"] += c["del"]
+            if c["ins"] + c["del"] > BULK_LINES:     # vendored or generated imports would drown real work
+                e["bulk_ins"] += c["ins"]
+                e["bulk_del"] += c["del"]
+            else:
+                e["ins"] += c["ins"]
+                e["del"] += c["del"]
             if name not in e["repos"]:
                 e["repos"].append(name)
             wk = monday(d).isoformat()
@@ -839,6 +912,19 @@ def period_totals(days, start, end):
     return c, len(repos), ins, dele
 
 
+def period_bulk(days, start, end):
+    """(insertions, deletions) that came from bulk commits in start..end inclusive."""
+    ins = dele = 0
+    d = start
+    while d <= end:
+        v = days.get(d.isoformat())
+        if v:
+            ins += v.get("bulk_ins", 0)
+            dele += v.get("bulk_del", 0)
+        d += timedelta(days=1)
+    return ins, dele
+
+
 def avg_weekly_commits(days, today):
     """Mean commits per week over the 4 complete weeks before the current one."""
     this_mon = monday(today)
@@ -905,14 +991,16 @@ def heatmap(days, today, weeks=12, color=False):
 
 # --- Sessions: open, background, orphaned and past Claude Code sessions ------
 
-SESSION_GLYPH = {"working": "▶", "attached": "◉", "detached": "○", "terminal": "▣",
+SESSION_GLYPH = {"working": "▶", "attached": "◉", "detached": "○", "terminal": "▣", "headless": "⚙",
                  "orphan": "⚠", "stale": "✗", "past": "·"}
-SESSION_RANK = {"working": 0, "attached": 1, "detached": 2, "terminal": 3, "orphan": 4, "stale": 5, "past": 6}
+SESSION_RANK = {"working": 0, "attached": 1, "detached": 2, "terminal": 3, "headless": 4, "orphan": 5,
+                "stale": 6, "past": 7}
 SESSION_EXPLAIN = {
     "working": "background session, working; nobody is viewing it",
     "attached": "background session, open in a terminal",
     "detached": "background session, idle or done; nobody is viewing it",
     "terminal": "interactive session running in a terminal",
+    "headless": "non-interactive session (claude -p / SDK): no terminal by design, not orphaned",
     "orphan": "interactive session still running but its terminal is gone",
     "stale": "registry entry whose process has exited",
     "past": "finished session; resumable from its transcript",
@@ -938,6 +1026,23 @@ def proc_tty(pid):
         return os.readlink(f"/proc/{pid}/fd/0")
     except OSError:
         return ""
+
+
+def proc_cmdline(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline") as f:
+            return f.read().replace("\0", " ")
+    except OSError:
+        return ""
+
+
+def is_headless(entry):
+    """Print-mode / SDK sessions have no terminal by design; they are not abandoned."""
+    ep = entry.get("entrypoint") or ""
+    if ep and ep != "cli":
+        return True
+    cmd = " " + proc_cmdline(entry["pid"]) + " "
+    return " -p " in cmd or " --print " in cmd
 
 
 def tty_alive(tty):
@@ -1012,7 +1117,7 @@ def classify_live(entries, now=None):
         if not running:
             state = "stale"
         elif e.get("kind") == "interactive":
-            state = "terminal" if tty_alive(tty) else "orphan"
+            state = "terminal" if tty_alive(tty) else ("headless" if is_headless(e) else "orphan")
         elif job in parked:
             state = "attached"
         elif e.get("status") == "busy":
@@ -1065,7 +1170,8 @@ def sessions_summary(counts=None):
     c = counts if counts is not None else session_counts()
     parts = []
     for key, label in (("working", "working"), ("attached", "attached"), ("detached", "detached"),
-                       ("terminal", "in terminals"), ("orphan", "ORPHANED"), ("stale", "stale")):
+                       ("terminal", "in terminals"), ("headless", "headless"), ("orphan", "ORPHANED"),
+                       ("stale", "stale")):
         if c.get(key):
             parts.append(f"{c[key]} {label}")
     parts.append(f"{c.get('past', 0)} resumable")
@@ -1150,6 +1256,7 @@ def session_preview(slug, cwd, width=60):
             "attached": "enter: attach (claude attach)   ctrl-x: stop",
             "detached": "enter: attach (claude attach)   ctrl-x: stop",
             "terminal": "open in another terminal: switch to it (it cannot be attached)",
+            "headless": "running without a terminal (claude -p / SDK); leave it alone",
             "orphan": "ctrl-x: stop the leftover process",
             "stale": "ctrl-x: remove the stale registry entry",
             "past": "enter: resume (claude --resume) in its directory"}.get(state, "")
@@ -1259,6 +1366,8 @@ def open_session(slug, cwd):
         os.chdir(target)
         os.execvp("claude", claude_argv(False) + ["--resume", sid])
         return
+    if state == "headless":
+        sys.exit("claude-hub: that is a non-interactive (claude -p / SDK) session; it has no terminal to attach")
     if state == "terminal":
         sys.exit("claude-hub: that session is running in another terminal; switch to that window "
                  "(a live terminal session cannot be attached from here)")
@@ -1306,8 +1415,11 @@ def stats_header(cache, today=None):
     w = period_totals(days, monday(today), today)
     avg = avg_weekly_commits(days, today)
     note = f" · stats partial ({s['partial']} repos timed out)" if s.get("partial") else ""
-    return [f"streak {cur}d (best {best}d) · today {t[0]}c {t[1]}r +{kfmt(t[2])}/-{kfmt(t[3])}",
-            f"week {w[0]}c {w[1]}r +{kfmt(w[2])}/-{kfmt(w[3])} (avg {avg:.0f}c/wk){note}"]
+    tb, wb = period_bulk(days, today, today), period_bulk(days, monday(today), today)
+    tbulk = f" (+{kfmt(sum(tb))} bulk)" if sum(tb) else ""
+    wbulk = f" (+{kfmt(sum(wb))} bulk)" if sum(wb) else ""
+    return [f"streak {cur}d (best {best}d) · today {t[0]}c {t[1]}r +{kfmt(t[2])}/-{kfmt(t[3])}{tbulk}",
+            f"week {w[0]}c {w[1]}r +{kfmt(w[2])}/-{kfmt(w[3])}{wbulk} (avg {avg:.0f}c/wk){note}"]
 
 
 def tag_state_file():
@@ -1365,12 +1477,43 @@ def header_lines(cache, cfg, warn, gh_present):
 FOOTER = "enter open · ctrl-l resume · ctrl-r refresh · ctrl-t tags\nctrl-s sessions · ctrl-x stop · esc quit"
 
 
+def under(path, base):
+    base = base.rstrip("/")
+    return path == base or path.startswith(base + "/")
+
+
+def live_sessions():
+    return [s for s in classify_live(read_registry()) if s["state"] != "stale"]
+
+
+def attach_session_badges(entries, sessions=None):
+    """Count live sessions per project (longest matching directory wins). Returns the home-row counts.
+    Badges are display only: they never influence ordering, so nothing moves because a session started."""
+    sessions = live_sessions() if sessions is None else sessions
+    paths = sorted({os.path.realpath(e["path"]): e for e in entries if e["path"]}.items(),
+                   key=lambda kv: len(kv[0]), reverse=True)
+    home = {"n": 0, "orphan": 0}
+    for s in sessions:
+        cwd = os.path.realpath(s["cwd"]) if s["cwd"] else ""
+        target = next((e for p, e in paths if cwd and under(cwd, p)), None)
+        bucket = target.setdefault("sess", {"n": 0, "orphan": 0}) if target is not None else (
+            home if cwd == os.path.realpath(HOME) else None)
+        if bucket is None:
+            continue
+        bucket["n"] += 1
+        if s["state"] == "orphan":
+            bucket["orphan"] += 1
+    return home
+
+
 def gather(cfg):
     cache = load_cache()
     local = scan_local(cfg["scan_roots"])
     gh_repos = (cache.get("gh") or {}).get("repos", [])
-    entries = order_entries(build_entries(local, gh_repos, cfg), cfg, cache.get("prs"))
-    return cache, entries[:MAX_ROWS]
+    entries = group_worktrees(order_entries(build_entries(local, gh_repos, cfg), cfg, cache.get("prs")))
+    entries = entries[:MAX_ROWS]
+    cache["_home_sessions"] = attach_session_badges(entries)     # in-memory only, never saved
+    return cache, entries
 
 
 def fzf_lines(entries, cfg, cache, tag=""):
@@ -1385,7 +1528,9 @@ def fzf_lines(entries, cfg, cache, tag=""):
     tw = max([len(x) for x in tagtxt] or [0])
     lines = []
     if not tag:
-        lines.append("\t".join(["~", "~", " " * tw, "(home: dashboard, system and account work)",
+        hs = cache.get("_home_sessions") or {}
+        badge = ("  ▶%d" % hs["n"] if hs.get("n") else "") + ("  ⚠%d" % hs["orphan"] if hs.get("orphan") else "")
+        lines.append("\t".join(["~", "~", " " * tw, "(home: dashboard, system and account work)" + badge,
                                HOME, "", "~"]))
     for e, r, tg in zip(entries, rows, tagtxt):
         cols = "  ".join(r[i].ljust(w[i]) for i in range(1, 6)) + "  " + r[6]

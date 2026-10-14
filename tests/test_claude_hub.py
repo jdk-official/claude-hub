@@ -943,6 +943,20 @@ class SessionsView(Tmp):
         with mock.patch.object(hub, "proc_tty", return_value="/dev/null"):
             self.assertEqual(self.states()["orph-0000"], "orphan")
 
+    def test_print_mode_and_sdk_sessions_are_headless_not_orphaned(self):
+        self.reg(self.me, "sdk-00000", kind="interactive", entrypoint="sdk-cli")
+        with mock.patch.object(hub, "proc_tty", return_value="socket:[1]"):
+            self.assertEqual(self.states()["sdk-00000"], "headless")
+        self.reg(self.parent, "pm-000000", kind="interactive", entrypoint="cli")
+        with mock.patch.object(hub, "proc_tty", return_value="socket:[1]"), \
+                mock.patch.object(hub, "proc_cmdline", return_value="claude -p /goal run checks"):
+            self.assertEqual(self.states()["pm-000000"], "headless")
+        # a plain interactive cli session without a terminal is still an orphan
+        self.reg(self.me, "orph-0000", kind="interactive", entrypoint="cli")
+        with mock.patch.object(hub, "proc_tty", return_value="socket:[1]"), \
+                mock.patch.object(hub, "proc_cmdline", return_value="claude"):
+            self.assertEqual(self.states()["orph-0000"], "orphan")
+
     def test_pid_reuse_is_detected_by_start_time(self):
         self.reg(self.me, "reuse-000", kind="bg", procStart="12345")      # alive pid, different process
         self.assertEqual(self.states()["reuse-000"], "stale")
@@ -1057,6 +1071,125 @@ class SessionsView(Tmp):
             f.write(json.dumps({"type": "user", "message": {"content": "second question"}}) + "\n")
             f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "second answer"}]}}) + "\n")
         self.assertEqual(hub.transcript_tail(path), ("second question", "second answer"))
+
+
+class WorktreesBadgesBulk(Tmp):
+    def mk_repo_with_worktree(self, remote="git@github.com:o/proj.git"):
+        root = os.path.join(self.tmp, "root")
+        os.makedirs(root)
+        parent = os.path.join(root, "proj")
+        make_repo(parent, remote=remote)
+        wt = os.path.join(root, "proj-feature")
+        sh(["git", "worktree", "add", "-q", "-b", "feature", wt], parent)
+        return root, parent, wt
+
+    # --- worktrees -------------------------------------------------------
+    def test_worktree_is_detected_from_the_git_file(self):
+        root, parent, wt = self.mk_repo_with_worktree()
+        self.assertEqual(hub.inspect_dir(root, wt)["worktree_of"], os.path.realpath(parent))
+        self.assertEqual(hub.inspect_dir(root, parent)["worktree_of"], "")
+
+    def test_worktree_shares_the_remote_but_is_not_deduplicated_away(self):
+        root, parent, wt = self.mk_repo_with_worktree()
+        es = hub.build_entries(hub.scan_local([root]), [], dict(hub.DEFAULT_CONFIG))
+        self.assertEqual(sorted(e["name"] for e in es), ["proj", "proj-feature"])
+        child = next(e for e in es if e["name"] == "proj-feature")
+        self.assertEqual(child["parent"], parent)
+
+    def test_worktrees_sit_under_their_parent_and_parent_inherits_recency(self):
+        root, parent, wt = self.mk_repo_with_worktree()
+        other = os.path.join(root, "zzz-other")
+        make_repo(other, remote="git@github.com:o/other.git", date="2026-10-13T12:00:00")
+        local = hub.scan_local([root])
+        for l in local:                        # the worktree is the most recently active place
+            l["ts"] = {"proj-feature": 9000, "proj": 10, "zzz-other": 500}[l["name"]]
+        cfg = dict(hub.DEFAULT_CONFIG)
+        es = hub.group_worktrees(hub.order_entries(hub.build_entries(local, [], cfg), cfg))
+        self.assertEqual([e["name"] for e in es], ["proj", "proj-feature", "zzz-other"])
+
+    def test_dirty_worktree_makes_the_parent_needs_attention(self):
+        root, parent, wt = self.mk_repo_with_worktree()
+        with open(os.path.join(wt, "wip.txt"), "w") as f:
+            f.write("x")
+        cfg = dict(hub.DEFAULT_CONFIG)
+        es = hub.build_entries(hub.scan_local([root]), [], cfg)
+        p = next(e for e in es if e["name"] == "proj")
+        self.assertTrue(hub.needs_attention(p, None))
+        self.assertIn("⎇1", hub.markers(p, cfg))
+
+    def test_rows_indent_worktrees(self):
+        root, parent, wt = self.mk_repo_with_worktree()
+        cfg = dict(hub.DEFAULT_CONFIG)
+        es = hub.group_worktrees(hub.order_entries(hub.build_entries(hub.scan_local([root]), [], cfg), cfg))
+        lines = hub.fzf_lines(es, cfg, {})
+        names = [l.split("\t")[1].strip() for l in lines[1:]]
+        self.assertEqual(names, ["proj", "↳ proj-feature"])
+        self.assertEqual(lines[2].split("\t")[6], "proj-feature")      # the raw name is still what launches
+
+    def test_preview_lists_other_worktrees(self):
+        root, parent, wt = self.mk_repo_with_worktree()
+        with mock.patch.object(hub, "live_sessions", return_value=[]):
+            text = hub.preview_text(parent, "", "proj", 60)
+        self.assertIn("worktrees:", text)
+        self.assertIn("proj-feature", text)
+
+    # --- session badges ---------------------------------------------------
+    def entry_for(self, path, name):
+        l = {"name": name, "path": path, "root": os.path.dirname(path), "is_git": True, "ts": 1, "branch": "main",
+             "dirty": 0, "ahead": 0, "behind": 0, "has_upstream": False, "remote": "", "slug": "", "worktree_of": ""}
+        return {"name": name, "slug": "", "path": path, "local": l, "gh": None, "ts": 1, "origin": "x"}
+
+    def test_badges_use_the_most_specific_directory_and_count_home(self):
+        a = self.entry_for("/work/proj", "proj")
+        b = self.entry_for("/work/proj/sub", "sub")
+        sess = [{"cwd": "/work/proj/x/deep", "state": "working"}, {"cwd": "/work/proj/sub", "state": "detached"},
+                {"cwd": hub.HOME, "state": "terminal"}, {"cwd": hub.HOME, "state": "orphan"},
+                {"cwd": "/elsewhere", "state": "working"}]
+        with mock.patch.object(hub.os.path, "realpath", side_effect=lambda p: p):
+            home = hub.attach_session_badges([a, b], sess)
+        self.assertEqual(a["sess"]["n"], 1)
+        self.assertEqual(b["sess"]["n"], 1)
+        self.assertEqual(home, {"n": 2, "orphan": 1})
+        self.assertIn("▶1", hub.markers(a, hub.DEFAULT_CONFIG))
+
+    def test_badges_never_change_the_order(self):
+        quiet = self.entry_for("/work/quiet", "quiet")
+        quiet["ts"] = 50
+        busy = self.entry_for("/work/busy", "busy")
+        busy["ts"] = 10
+        before = [e["name"] for e in hub.order_entries([busy, quiet], hub.DEFAULT_CONFIG)]
+        with mock.patch.object(hub.os.path, "realpath", side_effect=lambda p: p):
+            hub.attach_session_badges([busy, quiet], [{"cwd": "/work/busy", "state": "working"}])
+        self.assertEqual([e["name"] for e in hub.order_entries([busy, quiet], hub.DEFAULT_CONFIG)], before)
+
+    def test_home_row_shows_the_badge(self):
+        cache = {"_home_sessions": {"n": 3, "orphan": 1}}
+        line = hub.fzf_lines([], hub.DEFAULT_CONFIG, cache)[0]
+        self.assertIn("▶3", line)
+        self.assertIn("⚠1", line)
+
+    # --- bulk lines ---------------------------------------------------------
+    def test_bulk_commits_count_as_commits_but_their_lines_are_separate(self):
+        commits = [{"hash": "a", "date": "2026-10-13", "ins": 54000, "del": 800},
+                   {"hash": "b", "date": "2026-10-13", "ins": 120, "del": 30},
+                   {"hash": "c", "date": "2026-10-13", "ins": 10, "del": 0}]
+        st = hub.aggregate({"/r": ("r", commits)})
+        day = st["days"]["2026-10-13"]
+        self.assertEqual(day["c"], 3)
+        self.assertEqual((day["ins"], day["del"]), (130, 30))
+        self.assertEqual((day["bulk_ins"], day["bulk_del"]), (54000, 800))
+
+    def test_header_reports_bulk_separately(self):
+        from datetime import date as D
+        days = {"2026-10-13": {"c": 3, "ins": 130, "del": 30, "bulk_ins": 54000, "bulk_del": 800, "repos": ["r"]}}
+        lines = hub.stats_header({"stats": {"days": days}}, today=D(2026, 10, 13))
+        self.assertIn("+130/-30 (+54.8k bulk)", lines[0])
+        self.assertIn("(+54.8k bulk)", lines[1])
+
+    def test_header_without_bulk_is_unchanged(self):
+        from datetime import date as D
+        days = {"2026-10-13": {"c": 1, "ins": 5, "del": 1, "repos": ["r"]}}
+        self.assertNotIn("bulk", hub.stats_header({"stats": {"days": days}}, today=D(2026, 10, 13))[0])
 
 
 if __name__ == "__main__":

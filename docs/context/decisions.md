@@ -27,3 +27,6 @@ decisions also get their own record under `adr/` (see [adr/README.md](../adr/REA
 - 2026-10-13: Sessions are read from Claude Code's own registry and transcripts (no daemon of ours). Spares are hidden; a
   background session is "attached" when an interactive entry's parkedJobId equals its jobId.
 - 2026-10-13: Stopping anything is explicit (ctrl-x) and confirmed; orphan SIGTERM requires registry pid and procStart to match.
+- 2026-10-14: Worktrees are grouped under their parent and never de-duplicated against it (they share the remote).
+- 2026-10-14: Statistics cannot exclude worktrees (one commit database); bulk commits (over 5000 lines) are reported apart.
+- 2026-10-14: Print-mode and SDK sessions are `headless`, not `orphan`, so only abandoned interactive sessions are flagged.
