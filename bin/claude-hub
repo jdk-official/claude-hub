@@ -47,8 +47,9 @@ PREVIEW_WINDOW = "right,38%,wrap,<46(down,40%,wrap)"
 STATS_DAYS = 400
 STATS_TTL = 300
 BULK_LINES = 5000   # a single commit above this is a bulk import (vendored code, generated files)
-TABS = ("all", "local", "github", "other", "sessions")
-TAB_LABEL = {"all": "All", "local": "Local", "github": "GitHub", "other": "Other", "sessions": "Sessions"}
+TABS = ("projects", "other", "sessions")
+TAB_LABEL = {"projects": "Projects", "other": "Other", "sessions": "Sessions"}
+OLD_TABS = ("all", "local", "github", "projects")   # earlier tab names, all meaning the merged Projects tab
 STAT_DAYS = 14  # window for line counts; older commits count toward streaks and sparklines only
 IDENTITY_EMAILS = {"jonathan@kyte.me.uk"}
 BLOCKS = "▁▂▃▄▅▆▇█"
@@ -61,7 +62,7 @@ DEFAULT_CONFIG = {
     "hidden": [],
     "tags": {},
     "count": 10,
-    "start_tab": "all",
+    "start_tab": "projects",
     "show_worktrees": False,
 }
 
@@ -176,8 +177,8 @@ def load_config(path=None):
             warn.append("show_worktrees")
     if "start_tab" in data:
         v = data["start_tab"]
-        if isinstance(v, str) and v.lower() in TABS:
-            cfg["start_tab"] = v.lower()
+        if isinstance(v, str) and v.lower() in TABS + OLD_TABS:
+            cfg["start_tab"] = v.lower() if v.lower() in TABS else "projects"
         else:
             warn.append("start_tab")
     if "count" in data:
@@ -463,8 +464,24 @@ def origin_label(l):
     return "dir:" + os.path.basename(root)
 
 
+def last_claude_use(path):
+    """Mtime of the newest Claude session transcript for exactly this directory, else 0."""
+    if not path:
+        return 0
+    newest = 0
+    d = os.path.join(claude_dir(), "projects", re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(path)))
+    try:
+        for f in os.scandir(d):
+            if f.name.endswith(".jsonl"):
+                newest = max(newest, int(f.stat().st_mtime))
+    except OSError:
+        pass
+    return newest
+
+
 def build_entries(local, gh_repos, cfg):
-    """Merge local dirs and GitHub repos; de-dup by remote slug; drop hidden/archived."""
+    """Merge local dirs and GitHub repos; de-dup by remote slug; drop hidden/archived.
+    An entry's ts is when it was last used: the latest of its last commit, last push and last Claude session."""
     entries, by_slug = [], {}
     for l in sorted(local, key=lambda x: x["ts"], reverse=True):
         # a linked worktree shares its parent's remote but is its own place to work: never de-dup it
@@ -472,7 +489,7 @@ def build_entries(local, gh_repos, cfg):
         if key in by_slug:
             continue  # same remote cloned twice: keep the most recently active one
         e = {"name": l["name"], "slug": l["slug"], "path": l["path"], "local": l, "gh": None,
-             "ts": l["ts"], "origin": origin_label(l)}
+             "ts": max(l["ts"], last_claude_use(l["path"])), "origin": origin_label(l)}
         by_slug[key] = e
         entries.append(e)
     for g in gh_repos:
@@ -545,12 +562,12 @@ def pinned_index(e, cfg):
 
 
 def order_entries(entries, cfg, prs=None):
-    """Pinned (config order), then needs-attention, then most recent activity."""
+    """Pinned (config order), then most recently used first. Needs-attention shows as markers, not as position."""
     def key(e):
         idx = pinned_index(e, cfg)
         if idx is not None:
             return (0, idx, 0)
-        return (1, 0 if needs_attention(e, prs) else 1, -e["ts"])
+        return (1, 0, -e["ts"])
     return sorted(entries, key=key)
 
 
@@ -613,14 +630,11 @@ def source_kind(e, cfg):
 
 
 def in_tab(e, cfg, tab):
-    """Tab membership. Local and GitHub overlap on purpose (a synced repo is in both)."""
-    if tab == "all":
-        return True
+    """Projects holds everything that is yours (local, GitHub and both); Other holds plain folders and
+    other people's clones."""
     kind = source_kind(e, cfg)
-    if tab == "local":
-        return kind in ("synced", "local", "worktree")
-    if tab == "github":
-        return kind in ("synced", "github")
+    if tab == "projects":
+        return kind in ("synced", "local", "github", "worktree")
     if tab == "other":
         return kind in ("folder", "other-owner")
     return False
@@ -1524,14 +1538,14 @@ def mode_state_file():
     return os.environ.get("CLAUDE_HUB_MODE_STATE") or os.path.join(CACHE_DIR, "mode.state")
 
 
-def current_tab(default="all"):
+def current_tab(default="projects"):
     try:
         with open(mode_state_file()) as f:
             v = f.read().strip()
     except OSError:
         return default
-    if v == "projects":          # value written by the pre-tabs version
-        return "all"
+    if v in OLD_TABS:            # written by earlier versions
+        return "projects"
     return v if v in TABS else default
 
 
@@ -1539,7 +1553,7 @@ def set_tab(tab):
     try:
         os.makedirs(os.path.dirname(mode_state_file()), exist_ok=True)
         with open(mode_state_file(), "w") as f:
-            f.write(tab if tab in TABS else "all")
+            f.write(tab if tab in TABS else "projects")
     except OSError:
         pass
 
@@ -1565,11 +1579,11 @@ def current_mode():
 
 
 def set_mode(mode):
-    set_tab("sessions" if mode == "sessions" else "all")
+    set_tab("sessions" if mode == "sessions" else "projects")
 
 
 def toggle_mode():
-    new = "all" if current_tab() == "sessions" else "sessions"
+    new = "projects" if current_tab() == "sessions" else "sessions"
     set_tab(new)
     return "sessions" if new == "sessions" else "projects"
 
@@ -1781,7 +1795,7 @@ def header_lines(cache, cfg, warn, gh_present, entries=None):
 
 
 FOOTER = ("enter open · ctrl-l continue · ctrl-r refresh · ctrl-t tags · ctrl-w worktrees\n"
-          "ctrl-s/alt-s tabs · alt-1..5 jump · alt-h help · ctrl-x stop · esc quit")
+          "ctrl-s/alt-s tabs · alt-1..3 jump · alt-h help · ctrl-x stop · esc quit")
 
 
 def under(path, base):
@@ -1823,24 +1837,23 @@ def gather(cfg):
     return cache, entries
 
 
-def fzf_lines(entries, cfg, cache, tag="", tab="all"):
+def fzf_lines(entries, cfg, cache, tag="", tab="projects"):
     """Tab fields: 1 id (identity across reloads), 2 name, 3 tags, 4 columns, 5 path, 6 slug, 7 name.
     fzf displays fields 2-4 and searches fields 2-3 only (name and tags), so a query never matches
     the age, branch or marker text."""
     entries = shown_entries(entries, cfg)
-    if tab != "all":
-        entries = [e for e in entries if in_tab(e, cfg, tab)]
+    entries = [e for e in entries if in_tab(e, cfg, tab)]
     if tag:
         entries = [e for e in entries if tag in repo_tags(e, cfg)]
     rows = [row_cells(e, cfg, cache.get("prs")) for e in entries]
-    if tab != "all" and len(rows) > 1 and len({r[3] for r in rows}) == 1:
+    if tab == "other" and len(rows) > 1 and len({r[3] for r in rows}) == 1:
         for r in rows:
             r[3] = ""          # every row here comes from the same place; the preview still names it
     w = [max([len(r[i]) for r in rows] or [0]) for i in range(6)]
     tagtxt = [" ".join("#" + x for x in repo_tags(e, cfg)) for e in entries]
     tw = max([len(x) for x in tagtxt] or [0])
     lines = []
-    if not tag and tab in ("all", "local"):
+    if not tag and tab == "projects":
         hs = cache.get("_home_sessions") or {}
         badge = ("  ▶%d" % hs["n"] if hs.get("n") else "") + ("  ⚠%d" % hs["orphan"] if hs.get("orphan") else "")
         lines.append("\t".join(["~", "~", " " * tw, "(home: dashboard, system and account work)" + badge,
@@ -1857,7 +1870,7 @@ HELP_TEXT = """claude-hub keys
  enter     open / attach / resume
  ctrl-l    continue last session
  ctrl-s    next tab    alt-s previous
- alt-1..5  jump to a tab
+ alt-1..3  jump to a tab
  ctrl-t    cycle tag filter
  ctrl-w    show / hide worktrees
  ctrl-r    refresh GitHub + stats
@@ -1886,7 +1899,7 @@ Sessions
 EMPTY_ID = "~empty"
 
 
-def ensure_rows(lines, tab="all"):
+def ensure_rows(lines, tab="projects"):
     """fzf must never be handed an empty list: under --track an empty reload leaves the previous tab's rows on
     screen (or blocks input). An empty tab gets one inert placeholder row that Enter and ctrl-x ignore."""
     if lines:
@@ -1985,7 +1998,7 @@ def main(argv):
         return run_stats(args[1:], cfg)
     if "--session-stop" in args:   # ctrl-x (run with the terminal, so it can ask for confirmation)
         return session_stop(args[args.index("--session-stop") + 1])
-    if "--tab" in args:           # ctrl-s / alt-s / alt-1..5
+    if "--tab" in args:           # ctrl-s / alt-s / alt-1..3
         step_tab(args[args.index("--tab") + 1])
         return 0
     if "--toggle-worktrees" in args:   # ctrl-w
@@ -2092,7 +2105,7 @@ def main(argv):
             "--bind", f"alt-h:preview({me} --help-text)",
             # tabs: every tab switch updates state first, then prompt, header (before reload) and list
             *[x for key, how in (("ctrl-s", "next"), ("alt-s", "prev"), ("alt-1", "1"), ("alt-2", "2"),
-                                 ("alt-3", "3"), ("alt-4", "4"), ("alt-5", "5"))
+                                 ("alt-3", "3"))
               for x in ("--bind", (f"{key}:execute-silent({me} --tab {how})+transform-prompt({me} --prompt)"
                                    f"+transform-header({me} --header)+reload({me} --lines)"))],
             "--bind", f"ctrl-x:execute({me} --session-stop {{6}})+transform-header({me} --header)+reload({me} --lines)"]

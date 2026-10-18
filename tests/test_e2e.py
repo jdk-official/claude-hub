@@ -461,7 +461,7 @@ class E2E(unittest.TestCase):
         self.start()
         self.ready()
         self.quiet()
-        self.key("M-5")        # alt-5: jump straight to the Sessions tab
+        self.key("M-3")        # alt-5: jump straight to the Sessions tab
         self.wait_for(lambda: "session>" in self.screen() and "Overnight build" in self.screen(),
                       "sessions view", 8)
         self.settle()
@@ -473,7 +473,7 @@ class E2E(unittest.TestCase):
             self.assertIn(word, screen)
         self.settle()
         self.key("M-1")
-        self.wait_for(lambda: "repo>" in self.screen() and "[All" in self.screen(), "back to All", 8)
+        self.wait_for(lambda: "repo>" in self.screen() and "[Projects" in self.screen(), "back to All", 8)
         self.assertNotIn("◈ headless", self.screen().split("repo>")[0])     # the key belongs to the Sessions tab
 
     def test_sessions_tab_and_back_to_all(self):
@@ -489,7 +489,7 @@ class E2E(unittest.TestCase):
         self.settle()
         self.key("M-1")
         self.wait_for(lambda: "repo>" in self.screen() and "beta" in self.screen(), "back to All", 8)
-        self.assertIn("[All", self.screen())
+        self.assertIn("[Projects", self.screen())
         self.assertNotIn("Overnight build", self.screen().split("repo>")[1].split("╭")[0])
 
     def test_prompt_stays_in_sessions_mode_after_a_background_refresh(self):
@@ -497,7 +497,7 @@ class E2E(unittest.TestCase):
         self.seed_sessions()
         self.start(extra_env={"CLAUDE_HUB_E2E_SLEEP": "1"})
         self.ready()
-        self.key("M-5")
+        self.key("M-3")
         self.wait_for(lambda: "session>" in self.screen(), "sessions prompt", 8)
         lock = os.path.join(self.cache, "refresh.lock")
         self.wait_for(lambda: not os.path.exists(lock), "background refresh to finish", 10)
@@ -633,22 +633,14 @@ class E2E(unittest.TestCase):
     def tab_is(self, name, extra=""):
         return lambda: f"[{name}" in self.screen() and "+T*" not in self.screen() and extra in self.screen()
 
-    def test_ctrl_s_cycles_all_local_github_other_sessions_and_wraps(self):
+    def test_ctrl_s_cycles_projects_other_sessions_and_wraps(self):
         self.gh_repos_file("remote-only")
         self.start()
         self.ready()
         self.quiet()
-        self.assertIn("[All", self.screen())
-        self.key("C-s")
-        self.wait_for(self.tab_is("Local"), "Local tab", 8)
+        self.assertIn("[Projects", self.screen())
         self.assertIn("alpha", self.list_rows())
-        self.assertNotIn("remote-only", self.list_rows())          # GitHub-only is not on this machine
-        self.settle()
-        self.key("C-s")
-        self.wait_for(self.tab_is("GitHub"), "GitHub tab", 8)
-        self.assertIn("remote-only", self.list_rows())
-        self.assertNotIn("alpha", self.list_rows())                # local-only repos are not on GitHub
-        self.settle()
+        self.assertIn("remote-only", self.list_rows())             # local and GitHub share the one tab
         self.key("C-s")
         self.wait_for(self.tab_is("Other"), "Other tab", 8)
         self.assertNotIn("alpha", self.list_rows())
@@ -657,13 +649,13 @@ class E2E(unittest.TestCase):
         self.wait_for(lambda: "[Sessions" in self.screen() and "session>" in self.screen(), "Sessions tab", 8)
         self.settle()
         self.key("C-s")
-        self.wait_for(lambda: "[All" in self.screen() and "repo>" in self.screen(), "wrapped to All", 8)
+        self.wait_for(lambda: "[Projects" in self.screen() and "repo>" in self.screen(), "wrapped to Projects", 8)
 
     def test_an_empty_tab_shows_a_placeholder_and_does_not_trap_input(self):
         self.start()                       # the sandbox has no folders or others' clones, so Other is empty
         self.ready()
         self.quiet()
-        self.key("M-4")
+        self.key("M-2")
         self.wait_for(lambda: "[Other" in self.screen() and "nothing in the Other tab" in self.screen(),
                       "placeholder in the empty Other tab", 8)
         self.assertNotIn("alpha", self.list_rows())     # the previous tab's rows must not linger
@@ -671,30 +663,28 @@ class E2E(unittest.TestCase):
         self.key("Enter")                               # Enter on the placeholder does nothing
         time.sleep(0.8)
         self.assertFalse(os.path.exists(self.out))
-        self.key("M-1")                                 # and input still works: back to All
-        self.wait_for(lambda: "[All" in self.screen() and "alpha" in self.screen(), "back to All", 8)
+        self.key("M-1")                                 # and input still works: back to Projects
+        self.wait_for(lambda: "[Projects" in self.screen() and "alpha" in self.screen(), "back to Projects", 8)
 
     def test_empty_sessions_tab_is_not_a_dead_end(self):
         self.start()                       # no .claude registry at all
         self.ready()
         self.quiet()
-        self.key("M-5")
+        self.key("M-3")
         self.wait_for(lambda: "[Sessions" in self.screen() and "(no sessions)" in self.screen(), "empty sessions", 8)
         self.settle()
         self.key("M-1")
-        self.wait_for(lambda: "[All" in self.screen() and "alpha" in self.screen(), "keys still work", 8)
+        self.wait_for(lambda: "[Projects" in self.screen() and "alpha" in self.screen(), "keys still work", 8)
 
     def test_alt_s_goes_backwards_and_alt_number_jumps(self):
-        self.gh_repos_file("remote-only")
         self.start()
         self.ready()
         self.quiet()
         self.key("M-s")
-        self.wait_for(lambda: "[Sessions" in self.screen() and "session>" in self.screen(), "previous from All wraps to Sessions", 8)
+        self.wait_for(lambda: "[Sessions" in self.screen() and "session>" in self.screen(), "previous from Projects wraps to Sessions", 8)
         self.settle()
-        self.key("M-3")
-        self.wait_for(self.tab_is("GitHub"), "alt-3 jumps to GitHub", 8)
-        self.assertIn("remote-only", self.list_rows())
+        self.key("M-2")
+        self.wait_for(self.tab_is("Other"), "alt-2 jumps to Other", 8)
 
     def test_start_tab_comes_from_config(self):
         self.gh_repos_file("remote-only")
@@ -702,10 +692,9 @@ class E2E(unittest.TestCase):
         with open(cfg_path) as f:
             body = f.read()
         with open(cfg_path, "w") as f:
-            f.write('start_tab = "github"\n' + body)      # top-level keys must precede the [tags] table
+            f.write('start_tab = "other"\n' + body)      # top-level keys must precede the [tags] table
         self.start()
-        self.wait_for(lambda: "repo>" in self.screen() and "remote-only" in self.screen(), "picker on the GitHub tab", 10)
-        self.assertIn("[GitHub", self.screen())
+        self.wait_for(lambda: "repo>" in self.screen() and "[Other" in self.screen(), "picker on the Other tab", 10)
         self.assertNotIn("alpha", self.list_rows())
 
     def test_rows_show_a_source_glyph_and_an_honest_origin(self):

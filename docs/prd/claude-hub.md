@@ -50,7 +50,7 @@ Glossary: **scan root** = a directory whose immediate subdirectories claude-hub 
 | D-5 | Minimum Python 3.11; config is TOML via stdlib `tomllib` (resolves assumption row 12). | Confirmed by the user, 2026-10-13 |
 | D-6 | The cache may hold PR/issue counts and titles, not only counts (resolves row 19). | Confirmed by the user, 2026-10-13 |
 | D-7 | A streak survives until a full calendar day passes with no qualifying commit (resolves row 8). | Confirmed by the user, 2026-10-13 |
-| D-8 | Needs-attention repos (dirty, unpushed, open PR) outrank newer clean repos; pinned first (resolves row 13). | Confirmed by the user, 2026-10-13 |
+| D-8 | Superseded 2026-10-18: the list is pinned first, then most recently used (latest commit, push or Claude session). Needs-attention is shown by markers, not position. | User, 2026-10-18: list was confusing and not ordered by last accessed |
 | D-9 | Weeks run Monday to Sunday; "this week" is week-to-date (resolves row 6). | Confirmed by the user, 2026-10-13 |
 | D-10 | Lines changed = insertions plus deletions from numstat, merge commits excluded (resolves row 7). | Confirmed by the user, 2026-10-13 |
 | D-12 | Sessions are read from Claude Code's own registry and transcripts; pre-warmed spare sessions and transcripts with no user message are hidden; a process is only trusted when its registry start time matches the real one. | Built and verified against the user's live sessions, 2026-10-13 |
@@ -83,7 +83,7 @@ Listing, search, organisation
 - **FR-13** Where a repo is listed as hidden in `~/.config/claude-hub/config`, the launcher shall omit it from the list.
 - **FR-14** Where a repo is listed as pinned in `~/.config/claude-hub/config`, the launcher shall sort it ahead of all unpinned repos.
 - **FR-15** When the user presses the tag-filter key, the launcher shall restrict the list to repos carrying the selected tag from `~/.config/claude-hub/config`.
-- **FR-16** When the list is built or refreshed, the launcher shall order pinned repos first, then repos that (or whose worktrees) are dirty, have unpushed commits, or have an open PR, then the remainder by most recent activity (latest of last commit and last push).
+- **FR-16** When the list is built or refreshed, the launcher shall order pinned repos first, then all other repos by most recent use (latest of last commit, last push and last Claude session in that directory or its worktrees).
 
 Preview
 - **FR-17** When a repo is highlighted, the launcher shall show its last 3 commits as subject and age in the preview.
@@ -217,7 +217,7 @@ All numbers are targets to be measured, not measurements.
 - **AC-17** Where a repo is hidden in config, it shall be absent from the list and from search results.
 - **AC-18** Where a repo is pinned in config, it shall sort above all unpinned repos.
 - **AC-19** While the query is non-empty, a repo ranked beyond the first 10 shall be selectable by typing part of its name.
-- **AC-20** If a repo is dirty and unpinned, then it shall be ranked above a clean unpinned repo with newer activity.
+- **AC-20** If a repo is dirty and unpinned, then it shall not be ranked above a clean unpinned repo with newer use.
 - **AC-21** When `ctrl-l` is pressed on a repo with a prior session, claude-hub shall exec `claude --continue` in that directory.
 - **AC-22** The claude-hub source shall contain no invocation of `git push`, `reset`, `clean`, or a forced operation.
 - **AC-23** Given a scratch directory without `.git` under `/mnt/data/scratch`, when claude-hub lists projects, then the directory is listed, aged by mtime, and launchable.

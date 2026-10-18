@@ -32,6 +32,8 @@ Terminal launcher: pick a recent repo (GitHub + local) and start claude in it, w
   reported separately, headless sessions distinguished from orphans, PRD brought up to date.
 - Done (2026-10-14): source glyph on every row, honest origin labels, tabs on ctrl-s (All, Local, GitHub, Other,
   Sessions) with a counted tab bar, `start_tab` config, placeholder row for empty tabs.
+- Done (2026-10-18): All, Local and GitHub merged into one Projects tab (Other and Sessions stay); Projects is ordered by
+  last use (commit, push or Claude session) with attention shown as markers only. See adr/0001. 195 tests.
 - Done (2026-10-14, UX review): worktrees collapsed, list-first layout, tab bar leads, ctrl-l by id, supported
   session listing, claude rm, help (alt-h), home-only auto-launch, stale wrapper removed.
 - Reviewed: independent code review (1 HIGH, 6 MEDIUM, 7 LOW) all addressed in `review-fixes`: failed refresh no longer

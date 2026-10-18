@@ -169,15 +169,26 @@ class Ordering(unittest.TestCase):
         es = [entry("old", ts=1), entry("new", ts=9)]
         self.assertEqual([e["name"] for e in hub.order_entries(es, self.cfg)], ["new", "old"])
 
-    def test_dirty_outranks_newer_clean(self):  # AC-20
-        es = [entry("clean-new", ts=100), entry("dirty-old", ts=1, dirty=2)]
-        self.assertEqual(hub.order_entries(es, self.cfg)[0]["name"], "dirty-old")
+    def test_dirty_does_not_outrank_newer_clean(self):
+        es = [entry("dirty-old", ts=1, dirty=2), entry("clean-new", ts=100)]
+        self.assertEqual(hub.order_entries(es, self.cfg)[0]["name"], "clean-new")
 
-    def test_ahead_and_pr_count_as_attention(self):
-        es = [entry("a", ts=9), entry("b", ts=1, ahead=1),
+    def test_ahead_and_pr_count_do_not_reorder(self):
+        es = [entry("b", ts=1, ahead=1), entry("a", ts=9),
               entry("c", slug="o/c", ts=2, gh={"name": "c", "owner": "o", "pr_count": 1})]
         order = hub.order_entries(es, self.cfg)
-        self.assertEqual([e["name"] for e in order], ["c", "b", "a"])
+        self.assertEqual([e["name"] for e in order], ["a", "c", "b"])
+
+    def test_claude_session_counts_as_use(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        proj = os.path.join(d, "projects", "-work-used")
+        os.makedirs(proj)
+        open(os.path.join(proj, "s.jsonl"), "w").close()
+        os.utime(os.path.join(proj, "s.jsonl"), (500, 500))
+        with mock.patch.dict(os.environ, {"CLAUDE_HUB_CLAUDE_DIR": d}):
+            self.assertEqual(hub.last_claude_use("/work/used"), 500)
+            self.assertEqual(hub.last_claude_use("/work/never"), 0)
 
     def test_pinned_first_in_config_order(self):  # AC-18
         cfg = dict(self.cfg, pinned=["b", "a"])
@@ -776,7 +787,7 @@ class Iteration2Units(Tmp):
     def test_filtered_lines_hide_home_row_and_other_tags(self):
         a = entry("a", slug="o/a")
         b = entry("b", slug="o/b")
-        lines = hub.fzf_lines([a, b], self.cfg, {}, tag="y")
+        lines = hub.fzf_lines([a, b], dict(self.cfg, owners=["o"]), {}, tag="y")
         self.assertEqual(len(lines), 1)
         self.assertTrue(lines[0].startswith("o/b\t"))
 
@@ -1138,7 +1149,12 @@ class WorktreesBadgesBulk(Tmp):
         es = hub.group_worktrees(hub.order_entries(hub.build_entries(hub.scan_local([root]), [], cfg), cfg))
         lines = hub.fzf_lines(es, cfg, {})
         names = [l.split("\t")[1].strip() for l in lines[1:]]
-        self.assertEqual(names, ["◇ proj", "↳ proj-feature"])   # proj has someone else's remote; the worktree is ↳
+        self.assertEqual(names, ["↳ proj-feature"])     # proj has someone else's remote, so it is on the Other tab
+        self.assertEqual([l.split("\t")[1].strip() for l in hub.fzf_lines(es, cfg, {}, tab="other")], ["◇ proj"])
+        cfg = dict(cfg, owners=["o"])
+        lines = hub.fzf_lines(es, cfg, {})
+        names = [l.split("\t")[1].strip() for l in lines[1:]]
+        self.assertEqual(names, ["⌂ proj", "↳ proj-feature"])   # once the owner is yours, proj is a project
         self.assertEqual(lines[2].split("\t")[6], "proj-feature")      # the raw name is still what launches
 
     def test_preview_lists_other_worktrees(self):
@@ -1243,22 +1259,22 @@ class SourceTabs(Tmp):
         self.assertEqual(hub.source_kind(self.e("f", "local", remote_owner="me"), c), "local")
         self.assertEqual(hub.source_kind(self.e("w", "worktree", parent=True), c), "worktree")
 
-    def test_tab_membership_overlaps_local_and_github(self):
+    def test_projects_tab_merges_local_and_github_and_other_holds_the_rest(self):
         c = self.cfg
         synced, gh_only = self.e("a", "synced"), self.e("b", "github")
         local, folder = self.e("c", "local"), self.e("d", "folder")
         theirs = self.e("e", "other-owner", remote_owner="them")
+        wt = self.e("w", "worktree", parent=True)
         member = lambda e: {t for t in hub.TABS if hub.in_tab(e, c, t)}
-        self.assertEqual(member(synced), {"all", "local", "github"})
-        self.assertEqual(member(gh_only), {"all", "github"})
-        self.assertEqual(member(local), {"all", "local"})
-        self.assertEqual(member(folder), {"all", "other"})
-        self.assertEqual(member(theirs), {"all", "other"})
+        for e in (synced, gh_only, local, wt):
+            self.assertEqual(member(e), {"projects"})
+        for e in (folder, theirs):
+            self.assertEqual(member(e), {"other"})
 
     def test_counts_and_bar_mark_the_current_tab(self):
         es = [self.e("a", "synced"), self.e("b", "github"), self.e("c", "local"), self.e("d", "folder")]
-        bar = hub.tab_bar(es, self.cfg, "github", sessions_n=3)
-        self.assertEqual(bar, "◂ All 4 · Local 2 · [GitHub 2] · Other 1 · Sessions 3 ▸")
+        bar = hub.tab_bar(es, self.cfg, "projects", sessions_n=3)
+        self.assertEqual(bar, "◂ [Projects 3] · Other 1 · Sessions 3 ▸")
 
     def test_rows_start_with_the_source_glyph(self):
         c = self.cfg
@@ -1279,31 +1295,28 @@ class SourceTabs(Tmp):
     def test_tab_filtering_in_the_list(self):
         es = [self.e("a", "synced"), self.e("b", "github"), self.e("c", "local"), self.e("d", "folder")]
         names = lambda tab: [l.split("\t")[6] for l in hub.fzf_lines(es, self.cfg, {}, "", tab) if l.split("\t")[0] != "~"]
-        self.assertEqual(names("all"), ["a", "b", "c", "d"])
-        self.assertEqual(names("local"), ["a", "c"])
-        self.assertEqual(names("github"), ["a", "b"])
+        self.assertEqual(names("projects"), ["a", "b", "c"])
         self.assertEqual(names("other"), ["d"])
 
-    def test_home_row_only_on_all_and_local(self):
+    def test_home_row_only_on_projects(self):
         has_home = lambda tab: any(l.startswith("~\t") for l in hub.fzf_lines([], self.cfg, {}, "", tab))
-        self.assertTrue(has_home("all"))
-        self.assertTrue(has_home("local"))
-        self.assertFalse(has_home("github"))
+        self.assertTrue(has_home("projects"))
         self.assertFalse(has_home("other"))
 
     def test_tab_stepping_wraps_and_jumps(self):
-        self.assertEqual(hub.current_tab(), "all")
-        self.assertEqual([hub.step_tab("next") for _ in range(5)], ["local", "github", "other", "sessions", "all"])
+        self.assertEqual(hub.current_tab(), "projects")
+        self.assertEqual([hub.step_tab("next") for _ in range(3)], ["other", "sessions", "projects"])
         self.assertEqual(hub.step_tab("prev"), "sessions")
-        self.assertEqual(hub.step_tab("3"), "github")
+        self.assertEqual(hub.step_tab("2"), "other")
         self.assertEqual(hub.step_tab("99"), "sessions")      # clamped, not an error
         self.assertEqual(hub.step_tab("nonsense"), "sessions")
         self.assertEqual(hub.current_mode(), "sessions")
 
-    def test_old_state_value_is_understood(self):
-        with open(self.state, "w") as f:
-            f.write("projects")
-        self.assertEqual(hub.current_tab(), "all")
+    def test_old_state_values_are_understood(self):
+        for old in ("projects", "all", "local", "github"):
+            with open(self.state, "w") as f:
+                f.write(old)
+            self.assertEqual(hub.current_tab(), "projects")
 
     def test_long_state_text_is_capped_so_the_origin_stays_visible(self):
         e = self.e("a", "local")
@@ -1313,16 +1326,13 @@ class SourceTabs(Tmp):
         self.assertTrue(cells[4].endswith("…"))
         self.assertEqual(cells[3], e["origin"])
 
-    def test_origin_column_is_dropped_when_a_tab_is_uniform(self):
-        es = [self.e("a", "synced"), self.e("c", "synced")]
+    def test_origin_column_is_dropped_when_the_other_tab_is_uniform(self):
+        es = [self.e("a", "folder"), self.e("c", "folder")]
         for e in es:
-            e["origin"] = "gh:me"
-        line = hub.fzf_lines(es, self.cfg, {}, "", "github")[1]
-        self.assertNotIn("gh:me", line)
-        mixed = [self.e("a", "synced"), self.e("b", "github")]
-        mixed[0]["origin"], mixed[1]["origin"] = "gh:me", "gh:other"
-        self.assertIn("gh:me", "\n".join(hub.fzf_lines(mixed, self.cfg, {}, "", "github")))
-        self.assertIn("gh:me", "\n".join(hub.fzf_lines(es, self.cfg, {}, "", "all")))   # All always shows it
+            e["origin"] = "dir:scratch"
+        self.assertNotIn("dir:scratch", hub.fzf_lines(es, self.cfg, {}, "", "other")[0])
+        es[1]["origin"] = "dir:files"
+        self.assertIn("dir:scratch", "\n".join(hub.fzf_lines(es, self.cfg, {}, "", "other")))
 
     def test_long_worktree_names_drop_the_parent_prefix_and_are_capped(self):
         wt = self.e("claude-code-terminal-bar-crawl-pbi-014-ci-for-the-public-repo", "worktree", parent=True)
@@ -1349,12 +1359,17 @@ class SourceTabs(Tmp):
     def test_start_tab_config(self):
         p = os.path.join(self.tmp, "config")
         with open(p, "w") as f:
-            f.write('start_tab = "Local"\n')
-        self.assertEqual(hub.load_config(p)[0]["start_tab"], "local")
+            f.write('start_tab = "Other"\n')
+        self.assertEqual(hub.load_config(p)[0]["start_tab"], "other")
+        for old in ("all", "local", "github"):          # earlier tab names mean Projects, without a warning
+            with open(p, "w") as f:
+                f.write(f'start_tab = "{old}"\n')
+            cfg, warn = hub.load_config(p)
+            self.assertEqual((cfg["start_tab"], warn), ("projects", None))
         with open(p, "w") as f:
             f.write('start_tab = "nowhere"\n')
         cfg, warn = hub.load_config(p)
-        self.assertEqual(cfg["start_tab"], "all")
+        self.assertEqual(cfg["start_tab"], "projects")
         self.assertIn("start_tab", warn)
 
 
@@ -1387,7 +1402,7 @@ class SessionLegend(Tmp):
 
     def test_legend_is_in_the_header_only_on_the_sessions_tab(self):
         cfg = dict(hub.DEFAULT_CONFIG)
-        hub.set_tab("all")
+        hub.set_tab("projects")
         self.assertNotIn(hub.session_legend_lines()[0], "\n".join(hub.header_lines({}, cfg, None, False, [])))
         hub.set_tab("sessions")
         header = hub.header_lines({}, cfg, None, False, [])
@@ -1455,12 +1470,12 @@ class UxReview(Tmp):
 
     def test_counts_and_header_hint_follow_the_collapsed_state(self):
         es = self._entries()
-        self.assertIn("All 2", hub.tab_bar(es, self.cfg, "all", sessions_n=0))
-        hub.set_tab("all")
+        self.assertIn("Projects 2", hub.tab_bar(es, self.cfg, "projects", sessions_n=0))
+        hub.set_tab("projects")
         header = hub.header_lines({}, self.cfg, None, False, es)
         self.assertTrue(any("1 worktrees collapsed" in l and "ctrl-w" in l for l in header))
         hub.toggle_worktrees(self.cfg)
-        self.assertIn("All 3", hub.tab_bar(es, self.cfg, "all", sessions_n=0))
+        self.assertIn("Projects 3", hub.tab_bar(es, self.cfg, "projects", sessions_n=0))
         self.assertFalse(any("collapsed" in l for l in hub.header_lines({}, self.cfg, None, False, es)))
 
     def test_show_worktrees_config(self):
