@@ -104,7 +104,7 @@ Local, offline, derived from `git log` across scanned clones. Purpose: make stea
 | G8 | `claude-hub stats` shall print a 12-week contribution heatmap in the terminal. | Each cell matches that day's authored-commit count; output fits 80 columns. |
 
 Counting rules (defaults, to confirm):
-- Count commits authored by `jonathan@kyte.me.uk` or the GitHub noreply address; exclude bots.
+- Count commits authored by your commit email (config `emails`, default `git config user.email`) or the GitHub noreply address; exclude bots.
 - Commits with a `Co-Authored-By: Claude` trailer count (the user directed the work).
 - Streaks and goals count active days, not raw commits, so splitting a change into many commits does not pay.
 - Scope is local clones only; GitHub-only repos are excluded (would need an API call per repo).

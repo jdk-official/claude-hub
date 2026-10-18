@@ -255,7 +255,7 @@ All numbers are targets to be measured, not measurements.
 
 | # | Gap | Default chosen | Impact if wrong |
 |---|-----|----------------|-----------------|
-| 1 | Author identities for counting (brainstorm: "to confirm"). Exact GitHub noreply form unknown. | Match author email `jonathan@kyte.me.uk` or any `*@users.noreply.github.com` address containing `jdk-official`. | Streak and averages undercount or include foreign commits; adjust identity list. |
+| 1 | Author identities for counting (brainstorm: "to confirm"). Exact GitHub noreply form unknown. | Match author email `your configured commit email` or any `*@users.noreply.github.com` address containing `jdk-official`. | Streak and averages undercount or include foreign commits; adjust identity list. |
 | 2 | How bots are detected. | Exclude authors whose name or email contains `[bot]`. | Bot commits inflate stats, or a legitimate author is dropped. |
 | 3 | Commits with a `Co-Authored-By: Claude` trailer (brainstorm: counts, "to confirm"). | They count; a commit matching the identity or carrying the trailer is qualifying. | Streaks shrink if the user later wants only hand-written commits. |
 | 4 | Counting rules are marked "to confirm" in the brainstorm, while `context/decisions.md` records active days and local-only as decided (D-3). | Treat D-3 as decided; G2 displays raw commit counts, while streaks and averages use active days (FR-33). | If raw commits should drive the average, FR-29/FR-33 change. |

@@ -48,7 +48,7 @@ def make_repo(path, files, dirty=False):
             f.write(text)
     git(["add", "-A"], path)
     now = time.strftime("%Y-%m-%dT12:00:00")
-    git(["-c", "user.name=T", "-c", "user.email=jonathan@kyte.me.uk", "commit", "-q", "-m", "first commit"],
+    git(["-c", "user.name=T", "-c", "user.email=dev@example.com", "commit", "-q", "-m", "first commit"],
         path, env={"GIT_AUTHOR_DATE": now, "GIT_COMMITTER_DATE": now})
     if dirty:
         with open(os.path.join(path, "wip.txt"), "w") as f:

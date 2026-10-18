@@ -81,11 +81,13 @@ Typing searches names and tags only, never the branch or age text.
 
 ## Config
 
-`~/.config/claude-hub/config`, TOML. Top-level keys must come before the `[tags]` table.
+`~/.config/claude-hub/config`, TOML, optional. Top-level keys must come before the `[tags]` table.
 
 ```toml
-owners = ["your-github-login"]          # whose GitHub repos to list
-scan_roots = ["/home/you/code"]         # where local clones live
+owners = ["your-github-login"]          # whose GitHub repos to list (none by default: local repos only)
+clone_root = "~/code"                   # where GitHub-only repos are cloned; default ~/code
+scan_roots = ["~/code", "~/scratch"]    # where local clones live; defaults to clone_root
+emails = ["you@example.com"]            # commit emails that count in the stats; default: git config user.email
 pinned = ["dotfiles"]                   # always first, in this order
 hidden = ["old-experiments"]            # never listed (names or owner/name)
 count = 10                              # rows for --list
@@ -111,3 +113,7 @@ A block in `~/.bashrc` starts claude-hub when a new Ghostty shell opens in your 
   `tmux`, `fzf`, `git`, `chromium` and ImageMagick.
 - Project memory (handover, router, ADRs, tracking): [docs/INDEX.md](docs/INDEX.md). Requirements:
   [docs/requirements-brainstorm.md](docs/requirements-brainstorm.md).
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).

@@ -44,7 +44,7 @@ def make_repo(path, remote=None, commits=1, dirty=False, date="2026-10-01T12:00:
         with open(os.path.join(path, f"f{i}.txt"), "w") as f:
             f.write(str(i))
         sh(["git", "add", "-A"], path)
-        sh(["git", "-c", "user.name=T", "-c", "user.email=jonathan@kyte.me.uk",
+        sh(["git", "-c", "user.name=T", "-c", "user.email=dev@example.com",
             "commit", "-q", "-m", f"c{i}"], path,
            env={"GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date})
     if remote:
@@ -62,6 +62,10 @@ class Tmp(unittest.TestCase):
         p = mock.patch.object(hub, "CACHE_DIR", self.cache)
         p.start()
         self.addCleanup(p.stop)
+        saved = (hub.IDENTITY_EMAILS, hub.NOREPLY_RE, hub.CLONE_ROOT)
+        self.addCleanup(lambda: setattr(hub, "IDENTITY_EMAILS", saved[0]) or setattr(hub, "NOREPLY_RE", saved[1])
+                        or setattr(hub, "CLONE_ROOT", saved[2]))
+        hub.configure_identity({"emails": ["dev@example.com"], "owners": ["jdk-official"]})
 
 
 class RemoteSlug(unittest.TestCase):
@@ -85,7 +89,7 @@ class Config(Tmp):
     def test_missing_file_gives_defaults(self):
         cfg, warn = hub.load_config(os.path.join(self.tmp, "nope"))
         self.assertIsNone(warn)
-        self.assertEqual(cfg["owners"], ["jdk-official"])
+        self.assertEqual(cfg["owners"], [])
         self.assertEqual(cfg["count"], 10)
 
     def test_valid_values(self):
@@ -103,7 +107,7 @@ class Config(Tmp):
     def test_bad_toml_falls_back(self):
         cfg, warn = hub.load_config(self.write("owners = [unclosed"))
         self.assertIn("ignored", warn)
-        self.assertEqual(cfg["owners"], ["jdk-official"])
+        self.assertEqual(cfg["owners"], [])
 
     def test_bad_types_ignored_individually(self):
         cfg, warn = hub.load_config(self.write('count = "ten"\npinned = ["ok"]\n'))
@@ -436,6 +440,42 @@ class Preview(Tmp):
         self.assertIn("not cloned", text)
 
 
+class Identity(Tmp):
+    def test_configured_emails_and_owner_noreply_count_and_nobody_else(self):
+        hub.configure_identity({"emails": ["Me@Example.com"], "owners": ["alice"]})
+        q = hub.qualifies
+        self.assertTrue(q("x", "me@example.com", ""))
+        self.assertTrue(q("x", "123+alice@users.noreply.github.com", ""))
+        self.assertFalse(q("x", "bob@users.noreply.github.com", ""))
+        self.assertFalse(q("x", "stranger@example.com", ""))
+        self.assertTrue(q("x", "stranger@example.com", "Co-Authored-By: Claude <noreply@anthropic.com>"))
+
+    def test_defaults_to_git_user_email_and_no_owners_means_no_noreply(self):
+        with mock.patch.object(hub, "run", return_value=(0, "Git@Example.com\n", "")):
+            hub.configure_identity({"emails": [], "owners": []})
+        self.assertEqual(hub.IDENTITY_EMAILS, {"git@example.com"})
+        self.assertFalse(hub.qualifies("x", "1+alice@users.noreply.github.com", ""))
+
+    def test_clone_root_from_config_but_env_wins(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_HUB_CLONE_ROOT": ""}):
+            hub.configure_identity({"emails": ["a@b.c"], "owners": [], "clone_root": "/srv/code"})
+        self.assertEqual(hub.CLONE_ROOT, "/srv/code")
+        with mock.patch.dict(os.environ, {"CLAUDE_HUB_CLONE_ROOT": "/env/root"}):
+            hub.configure_identity({"emails": ["a@b.c"], "owners": [], "clone_root": "/srv/other"})
+        self.assertEqual(hub.CLONE_ROOT, "/srv/code")
+
+    def test_config_keys_clone_root_and_emails(self):
+        p = os.path.join(self.tmp, "config")
+        with open(p, "w") as f:
+            f.write('clone_root = "~/src"\nemails = [" A@B.c "]\n')
+        cfg, warn = hub.load_config(p)
+        self.assertEqual((cfg["clone_root"], cfg["scan_roots"], cfg["emails"], warn),
+                         (os.path.expanduser("~/src"), [os.path.expanduser("~/src")], ["a@b.c"], None))
+        with open(p, "w") as f:
+            f.write('clone_root = 3\nemails = "x"\n')
+        self.assertIn("clone_root", hub.load_config(p)[1])
+
+
 class Stats(Tmp):
     from datetime import date as _d
     D = staticmethod(lambda s: __import__("datetime").date.fromisoformat(s))
@@ -445,10 +485,10 @@ class Stats(Tmp):
 
     def test_qualifies(self):
         q = hub.qualifies
-        self.assertTrue(q("J", "jonathan@kyte.me.uk", ""))
+        self.assertTrue(q("J", "dev@example.com", ""))
         self.assertTrue(q("J", "1234+jdk-official@users.noreply.github.com", ""))
         self.assertFalse(q("Other", "other@example.com", ""))
-        self.assertFalse(q("dependabot[bot]", "jonathan@kyte.me.uk", ""))
+        self.assertFalse(q("dependabot[bot]", "dev@example.com", ""))
         self.assertTrue(q("Bot", "x@example.com", "Claude Sonnet 5.5 <noreply@anthropic.com>"))
 
     def test_parse_log_shortstat(self):
@@ -532,7 +572,7 @@ class Stats(Tmp):
             sh(["git", "add", "-A"], r)
             sh(["git", "-c", f"user.name={name}", "-c", f"user.email={email}", "commit", "-q", "-m", msg],
                r, env={"GIT_AUTHOR_DATE": today, "GIT_COMMITTER_DATE": today})
-        commit("Me", "jonathan@kyte.me.uk", "mine", "a")
+        commit("Me", "dev@example.com", "mine", "a")
         commit("Stranger", "s@example.com", "theirs", "b")
         commit("dependabot[bot]", "bot@example.com", "bump", "c")
         commit("Helper", "h@example.com",

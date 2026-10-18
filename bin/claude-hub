@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
 HOME = os.path.expanduser("~")
-CLONE_ROOT = os.environ.get("CLAUDE_HUB_CLONE_ROOT") or "/mnt/data/github"
+CLONE_ROOT = os.environ.get("CLAUDE_HUB_CLONE_ROOT") or os.path.join(HOME, "code")
 CACHE_DIR = os.environ.get("CLAUDE_HUB_CACHE_DIR") or os.path.join(
     os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, ".cache"), "claude-hub")
 CONFIG_PATH = os.environ.get("CLAUDE_HUB_CONFIG") or os.path.join(HOME, ".config", "claude-hub", "config")
@@ -51,13 +51,15 @@ TABS = ("projects", "other", "sessions")
 TAB_LABEL = {"projects": "Projects", "other": "Other", "sessions": "Sessions"}
 OLD_TABS = ("all", "local", "github", "projects")   # earlier tab names, all meaning the merged Projects tab
 STAT_DAYS = 14  # window for line counts; older commits count toward streaks and sparklines only
-IDENTITY_EMAILS = {"jonathan@kyte.me.uk"}
+IDENTITY_EMAILS = set()      # set from the config (or git config user.email) by configure_identity
 BLOCKS = "▁▂▃▄▅▆▇█"
 HEAT = "░▒▓█"
 
 DEFAULT_CONFIG = {
-    "owners": ["jdk-official"],
-    "scan_roots": [CLONE_ROOT, "/mnt/data/files", "/mnt/data/scratch"],
+    "owners": [],
+    "clone_root": "",
+    "emails": [],
+    "scan_roots": [CLONE_ROOT],
     "pinned": [],
     "hidden": [],
     "tags": {},
@@ -69,7 +71,7 @@ DEFAULT_CONFIG = {
 # Never let a repo's own config run code: the scan walks untrusted scratch dirs.
 GIT_BASE = ["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
             "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat"]
-NOREPLY_RE = re.compile(r"^(\d+\+)?jdk-official@users\.noreply\.github\.com$", re.I)
+NOREPLY_RE = re.compile(r"(?!)")   # matches nothing until configure_identity knows your GitHub owners
 CLAUDE_TRAILER_RE = re.compile(r"\bclaude\b|@anthropic\.com", re.I)
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -163,6 +165,20 @@ def load_config(path=None):
                 cfg[key] = [os.path.expanduser(x) for x in v] if key == "scan_roots" else v
             else:
                 warn.append(key)
+    if "clone_root" in data:
+        v = data["clone_root"]
+        if isinstance(v, str) and v.strip():
+            cfg["clone_root"] = os.path.expanduser(v.strip())
+            if "scan_roots" not in data:
+                cfg["scan_roots"] = [cfg["clone_root"]]
+        else:
+            warn.append("clone_root")
+    if "emails" in data:
+        v = data["emails"]
+        if isinstance(v, list) and all(isinstance(x, str) for x in v):
+            cfg["emails"] = [x.strip().lower() for x in v if x.strip()]
+        else:
+            warn.append("emails")
     if "tags" in data:
         v = data["tags"]
         if isinstance(v, dict) and all(isinstance(t, list) for t in v.values()):
@@ -188,6 +204,23 @@ def load_config(path=None):
         else:
             warn.append("count")
     return cfg, (f"config: ignored invalid {', '.join(warn)}" if warn else None)
+
+
+def configure_identity(cfg):
+    """Apply the config that is process-wide: whose commits count in the stats (the configured emails, else your
+    git user.email, plus the GitHub noreply address of each owner) and where clones go (env var wins)."""
+    global IDENTITY_EMAILS, NOREPLY_RE, CLONE_ROOT
+    emails = {e.strip().lower() for e in cfg.get("emails") or [] if e.strip()}
+    if not emails:
+        rc, out, _ = run(["git", "config", "--get", "user.email"], timeout=5)
+        if rc == 0 and out.strip():
+            emails.add(out.strip().lower())
+    IDENTITY_EMAILS = emails
+    owners = [re.escape(o) for o in cfg.get("owners") or []]
+    NOREPLY_RE = re.compile(r"^(\d+\+)?(" + "|".join(owners) + r")@users\.noreply\.github\.com$", re.I) if owners \
+        else re.compile(r"(?!)")
+    if cfg.get("clone_root") and not os.environ.get("CLAUDE_HUB_CLONE_ROOT"):
+        CLONE_ROOT = cfg["clone_root"]
 
 
 # --- P2: cache --------------------------------------------------------------
@@ -1484,6 +1517,7 @@ def stale_summary_row(entries, cfg):
 def other_dashboard_text(width=60, entries=None, cfg=None, now=None):
     if cfg is None:
         cfg, _ = load_config()
+        configure_identity(cfg)
     if entries is None:
         gh = (load_cache().get("gh") or {}).get("repos", [])
         entries = build_entries(scan_local(cfg["scan_roots"]), gh, cfg)
@@ -2095,6 +2129,7 @@ def main(argv):
         print(preview_text(args[1], args[2], args[3], int(os.environ.get("FZF_PREVIEW_COLUMNS") or 60)))
         return 0
     cfg, warn = load_config()
+    configure_identity(cfg)
     if args[:1] == ["stats"]:
         return run_stats(args[1:], cfg)
     if "--session-stop" in args:   # ctrl-x (run with the terminal, so it can ask for confirmation)
