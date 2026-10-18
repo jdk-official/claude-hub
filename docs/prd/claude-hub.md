@@ -56,7 +56,7 @@ Glossary: **scan root** = a directory whose immediate subdirectories claude-hub 
 | D-12 | Sessions are read from Claude Code's own registry and transcripts; pre-warmed spare sessions and transcripts with no user message are hidden; a process is only trusted when its registry start time matches the real one. | Built and verified against the user's live sessions, 2026-10-13 |
 | D-13 | Session badges and worktree grouping are display only and never change ordering; viewing a project writes no cache that affects order or triggers a reload. | User report "viewing a project bumps it up", 2026-10-13 |
 | D-14 | Auto-launch is a shell-profile block, not Ghostty `initial-command`, because `initial-command` never fires in a long-running single-instance Ghostty. | Verified, 2026-10-13 |
-| D-15 | A single commit above 5000 changed lines is a bulk import: it counts as a commit but its lines are reported separately. Worktrees cannot be excluded from statistics because they share one commit database. | Measured on `daily-hub`: 57 identical commits from every checkout; one 54,814-line commit of 74,960 lines, 2026-10-13 |
+| D-15 | A single commit above 5000 changed lines is a bulk import: it counts as a commit but its lines are reported separately. Worktrees cannot be excluded from statistics because they share one commit database. | Measured on a repo with worktrees: 57 identical commits from every checkout; one 54,814-line commit of 74,960 lines, 2026-10-13 |
 | D-16 | The command and project are named `claude-hub`; environment variables are `CLAUDE_HUB_*`. | User request, 2026-10-13 |
 | D-17 | Tabs: All, Local, GitHub, Other, Sessions. Local (your git repos on this machine) and GitHub (your repos on GitHub, cloned or not) overlap on purpose; Other is plain folders and others' clones; Sessions is the last tab and `alt-5` reaches it directly. | User brief, "where does this live" brainstorm, 2026-10-14 |
 | D-18 | An empty list is never given to fzf: under `--track` an empty reload leaves the previous tab's rows on screen and, on the Sessions tab, blocks input. | Found by end-to-end tests and verified, 2026-10-14 |
@@ -151,9 +151,9 @@ Illustrative data, not measurements. Narrow window (about 50 columns, preview be
  > ho                                    12/48
  ───────────────────────────────────────────────────
  ★ claude-hub              ●3 ↑2   main    today   ▂▅█▃▁▁▂▆
- ★ daily-hub        ●1      main    today   ▁▁▃▅▂▁▁▁
+ ★ dotfiles         ●1      main    today   ▁▁▃▅▂▁▁▁
    agent-catalog    ↑1 PR2  main    2d      ▃▁▁▂▁▁▄▁
-   PSDRoster  ◌     PR1     —       today   ▁▁▁▁▂▅▃█
+   bookmark-sync ◌  PR1     —       today   ▁▁▁▁▂▅▃█
    SADashboard              main    7d      ▁▁▁▁▁▂▁▁
  ───────────────────────────────────────────────────
  claude-hub  jdk-official · private · local+gh · #tools
