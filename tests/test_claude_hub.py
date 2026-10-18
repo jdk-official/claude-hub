@@ -1437,6 +1437,15 @@ class TabDashboards(Tmp):
         self.assertEqual(hub.fzf_lines([], cfg, {}, "", "other"), [])
         self.assertTrue(all(not l.startswith(hub.STALE_ID) for l in hub.fzf_lines([self.other("a", 1)], cfg, {}, "", "projects")))
 
+    def test_dashboard_text_fits_a_narrow_preview(self):
+        cfg = dict(hub.DEFAULT_CONFIG, owners=["me"])
+        es = [self.other("a-rather-long-folder-name-here", 400, dirty=2), self.other("b", 130)]
+        for line in hub.other_dashboard_text(40, es, cfg, 1_000_000_000).splitlines():
+            self.assertLessEqual(len(line), 40, line)
+        ss = [self.sess("orphan", "a" * 30, cwd="/some/deep/directory/path/that/is/long")]
+        for line in hub.sessions_dashboard_text(40, ss).splitlines():
+            self.assertLessEqual(len(line), 40, line)
+
     def test_preview_routes_the_summary_rows(self):
         with mock.patch.object(hub, "sessions_dashboard_text", return_value="S"), \
                 mock.patch.object(hub, "other_dashboard_text", return_value="O"):

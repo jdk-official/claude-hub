@@ -1450,7 +1450,7 @@ def sessions_dashboard_text(width=60, sessions=None, now=None):
     todo = needs_you(live, now)
     out = ["~ sessions: needs you", ""]
     if todo:
-        out.append(f"{len(todo)} to deal with. Select the session and act on it.")
+        out.append(wrap(f"{len(todo)} to deal with. Select the session and act on it.", width))
         for s, why, hint in todo:
             out.append("")
             out.append(wrap(f"{SESSION_GLYPH[s['state']]} {s['name']}", width))
@@ -1459,7 +1459,7 @@ def sessions_dashboard_text(width=60, sessions=None, now=None):
                 out.append(wrap(f"  {s['cwd']}", width))
             out.append(f"  {hint}")
     else:
-        out.append("Nothing to clean up: no orphaned, stale or forgotten sessions.")
+        out.append(wrap("Nothing to clean up: no orphaned, stale or forgotten sessions.", width))
     counts = {}
     for s in live:
         counts[s["state"]] = counts.get(s["state"], 0) + 1
@@ -1489,7 +1489,8 @@ def other_dashboard_text(width=60, entries=None, cfg=None, now=None):
         entries = build_entries(scan_local(cfg["scan_roots"]), gh, cfg)
     others = [e for e in entries if in_tab(e, cfg, "other") and not e.get("parent")]
     stale = stale_entries(entries, cfg, now)
-    out = ["~ other: stale", "", f"{len(others)} folders and others' clones; {len(stale)} untouched for {STALE_DAYS} days or more."]
+    out = ["~ other: stale", "",
+           wrap(f"{len(others)} folders and others' clones; {len(stale)} untouched for {STALE_DAYS} days or more.", width)]
     if not stale:
         return "\n".join(out)
     out.append("")
@@ -1500,8 +1501,8 @@ def other_dashboard_text(width=60, entries=None, cfg=None, now=None):
         out.append(wrap(f"  {e['path']}", width))
     if len(stale) > STALE_LIST_MAX:
         out.append(f"  and {len(stale) - STALE_LIST_MAX} more")
-    out += ["", "A ● or ↑ means unsaved work; look before deleting.",
-            "To hide them from the list, add to the config:",
+    out += ["", wrap("A ● or ↑ means unsaved work; look before deleting.", width),
+            wrap("To hide them from the list, add to the config:", width),
             wrap("hidden = " + json.dumps([e["name"] for e in stale]), width)]
     return "\n".join(out)
 
