@@ -836,6 +836,10 @@ def preview_text(path, slug, name, width=60):
         return session_preview(slug, path, width)
     if name == "~":
         return dashboard_text(width)
+    if name == NEEDS_ID:
+        return sessions_dashboard_text(width)
+    if name == STALE_ID:
+        return other_dashboard_text(width)
     out = [name]
     gh = (load_cache().get("gh") or {}).get("repos", [])
     g = next((r for r in gh if slug and f"{r['owner']}/{r['name']}".lower() == slug.lower()), None)
@@ -1410,6 +1414,98 @@ def session_slug(s):
     return f"session:{s['state']}:{s['job']}:{s['pid']}:{s['sid']}"
 
 
+EMPTY_ID = "~empty"
+NEEDS_ID = "~needs"
+STALE_ID = "~stale"
+INFO_IDS = (EMPTY_ID, NEEDS_ID, STALE_ID)   # summary and placeholder rows: Enter does nothing
+IDLE_DETACHED_SECS = 24 * 3600
+STALE_DAYS = 90
+STALE_LIST_MAX = 15
+
+
+def needs_you(sessions, now=None):
+    """Sessions to act on: orphaned and stale ones to clean up, and detached ones left idle for a day or more.
+    Returns [(session, why, hint)] worst first."""
+    now = now or time.time()
+    out = []
+    for s in sessions:
+        if s["state"] == "orphan":
+            out.append((s, "terminal gone, process still running", "ctrl-x stops it"))
+        elif s["state"] == "stale":
+            out.append((s, "process has exited", "ctrl-x removes the entry"))
+        elif s["state"] == "detached" and s["updated"] and now - s["updated"] >= IDLE_DETACHED_SECS:
+            out.append((s, f"idle {age(s['updated']).replace(' ago', '')}, nobody attached", "enter attaches"))
+    return out
+
+
+def sessions_summary_row(sessions):
+    n = len(needs_you(sessions))
+    label = f"⚠ needs you  {n}" if n else "✓ nothing needs you"
+    return "\t".join([NEEDS_ID, label, "", "(summary: select to see what to clean up)", "", "", NEEDS_ID])
+
+
+def sessions_dashboard_text(width=60, sessions=None, now=None):
+    sessions = load_sessions() if sessions is None else sessions
+    live = [s for s in sessions if s["state"] != "past"]
+    todo = needs_you(live, now)
+    out = ["~ sessions: needs you", ""]
+    if todo:
+        out.append(f"{len(todo)} to deal with. Select the session and act on it.")
+        for s, why, hint in todo:
+            out.append("")
+            out.append(wrap(f"{SESSION_GLYPH[s['state']]} {s['name']}", width))
+            out.append(wrap(f"  {why} · {age(s['updated'])}", width))
+            if s["cwd"]:
+                out.append(wrap(f"  {s['cwd']}", width))
+            out.append(f"  {hint}")
+    else:
+        out.append("Nothing to clean up: no orphaned, stale or forgotten sessions.")
+    counts = {}
+    for s in live:
+        counts[s["state"]] = counts.get(s["state"], 0) + 1
+    out += ["", wrap(sessions_summary({**counts, "past": sum(1 for s in sessions if s["state"] == "past")}), width)]
+    return "\n".join(out)
+
+
+def stale_entries(entries, cfg, now=None):
+    """Other-tab entries not touched for STALE_DAYS, oldest first."""
+    now = now or time.time()
+    cutoff = now - STALE_DAYS * 86400
+    others = [e for e in entries if in_tab(e, cfg, "other") and not e.get("parent")]
+    return sorted((e for e in others if e["ts"] < cutoff), key=lambda e: e["ts"])
+
+
+def stale_summary_row(entries, cfg):
+    n = len(stale_entries(entries, cfg))
+    label = f"⌛ stale  {n}" if n else "✓ nothing stale"
+    return "\t".join([STALE_ID, label, "", "(summary: folders untouched for %d days)" % STALE_DAYS, "", "", STALE_ID])
+
+
+def other_dashboard_text(width=60, entries=None, cfg=None, now=None):
+    if cfg is None:
+        cfg, _ = load_config()
+    if entries is None:
+        gh = (load_cache().get("gh") or {}).get("repos", [])
+        entries = build_entries(scan_local(cfg["scan_roots"]), gh, cfg)
+    others = [e for e in entries if in_tab(e, cfg, "other") and not e.get("parent")]
+    stale = stale_entries(entries, cfg, now)
+    out = ["~ other: stale", "", f"{len(others)} folders and others' clones; {len(stale)} untouched for {STALE_DAYS} days or more."]
+    if not stale:
+        return "\n".join(out)
+    out.append("")
+    for e in stale[:STALE_LIST_MAX]:
+        l = e["local"] or {}
+        flag = " ●" + str(l["dirty"]) if l.get("dirty", 0) > 0 else (" ↑%d" % l["ahead"] if l.get("ahead") else "")
+        out.append(wrap(f"{SOURCE_GLYPH[source_kind(e, cfg)]} {e['name']}  {age(e['ts'])}{flag}", width))
+        out.append(wrap(f"  {e['path']}", width))
+    if len(stale) > STALE_LIST_MAX:
+        out.append(f"  and {len(stale) - STALE_LIST_MAX} more")
+    out += ["", "A ● or ↑ means unsaved work; look before deleting.",
+            "To hide them from the list, add to the config:",
+            wrap("hidden = " + json.dumps([e["name"] for e in stale]), width)]
+    return "\n".join(out)
+
+
 def session_lines(sessions):
     """Same 7-field layout as project rows so the picker bindings stay identical. The state glyph leads the
     name (as the source glyph does for projects) so it stays visible in a narrow pane."""
@@ -1858,6 +1954,8 @@ def fzf_lines(entries, cfg, cache, tag="", tab="projects"):
         badge = ("  ▶%d" % hs["n"] if hs.get("n") else "") + ("  ⚠%d" % hs["orphan"] if hs.get("orphan") else "")
         lines.append("\t".join(["~", "~", " " * tw, "(home: dashboard, system and account work)" + badge,
                                HOME, "", "~"]))
+    if tab == "other" and not tag and entries:
+        lines.append(stale_summary_row(entries, cfg))
     for e, r, tg in zip(entries, rows, tagtxt):
         cols = "  ".join(r[i].ljust(w[i]) for i in range(1, 6)) + "  " + r[6]
         ident = e["slug"] or e["path"] or e["name"]
@@ -1896,7 +1994,9 @@ Sessions
  headless: claude -p / SDK
  orphan: interactive, terminal gone"""
 
-EMPTY_ID = "~empty"
+def sessions_tab_lines(sessions):
+    """The needs-you summary row always leads, so the tab is never empty."""
+    return [sessions_summary_row([s for s in sessions if s["state"] != "past"])] + session_lines(sessions)
 
 
 def ensure_rows(lines, tab="projects"):
@@ -2036,7 +2136,7 @@ def main(argv):
     if "--lines" in args:
         tab = current_tab()
         if tab == "sessions":
-            print("\n".join(ensure_rows(session_lines(load_sessions()), tab)))
+            print("\n".join(sessions_tab_lines(load_sessions())))
             return 0
         cache, entries = gather(cfg)
         print("\n".join(ensure_rows(fzf_lines(entries, cfg, cache, current_tag(), tab), tab)))
@@ -2079,7 +2179,7 @@ def main(argv):
         os.environ["CLAUDE_HUB_MODE_STATE"] = env["CLAUDE_HUB_MODE_STATE"]
     set_tab(start_tab)
     if start_tab == "sessions":
-        lines = ensure_rows(session_lines(load_sessions()), start_tab)
+        lines = sessions_tab_lines(load_sessions())
     else:
         lines = ensure_rows(fzf_lines(entries, cfg, cache, "", start_tab), start_tab)
     argv_fzf = ["fzf", "--delimiter", "\t", "--tabstop", "1", "--with-nth", "2,3,4", "--nth", "1,2",
@@ -2096,7 +2196,7 @@ def main(argv):
         argv_fzf += [
             "--footer", FOOTER, "--listen", sock, "--track", "--id-nth", "1",
             # Enter on the placeholder row of an empty tab does nothing (it would otherwise close the picker)
-            "--bind", f"enter:transform:[ {{1}} = {shlex.quote(EMPTY_ID)} ] && echo ignore || echo accept",
+            "--bind", "enter:transform:" + " || ".join(f"[ {{1}} = {shlex.quote(i)} ]" for i in INFO_IDS) + " && echo ignore || echo accept",
             # ctrl-r returns at once (the refresh runs detached and the watcher reloads when it finishes).
             # Header updates go BEFORE reload: under --track fzf drops actions queued after a reload.
             "--bind", f"ctrl-r:change-prompt(refreshing> )+execute-silent({me} --kick-refresh)",
@@ -2133,7 +2233,7 @@ def main(argv):
     if not pick:
         return 0
     f = (pick.split("\t") + [""] * 7)[:7]
-    if f[0] == EMPTY_ID:          # the placeholder row of an empty tab
+    if f[0] in INFO_IDS:          # the placeholder row of an empty tab, or a summary row
         return 0
     name, path, slug = f[1].strip(), f[4], f[5]
     if slug.startswith("session:"):

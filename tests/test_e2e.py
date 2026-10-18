@@ -490,7 +490,42 @@ class E2E(unittest.TestCase):
         self.key("M-1")
         self.wait_for(lambda: "repo>" in self.screen() and "beta" in self.screen(), "back to All", 8)
         self.assertIn("[Projects", self.screen())
-        self.assertNotIn("Overnight build", self.screen().split("repo>")[1].split("╭")[0])
+        self.wait_for(lambda: "~ dashboard" in self.screen(), "home preview replaces the sessions preview", 8)
+        self.assertNotIn("Overnight build", self.screen())
+
+    def test_sessions_tab_leads_with_a_needs_you_row_and_its_dashboard(self):
+        self.open_sessions_view()
+        rows = [l.split("│")[0] for l in self.screen().splitlines()]
+        self.assertTrue(any("needs you  2" in r for r in rows), rows)       # the detached-idle and the stale one
+        self.wait_for(lambda: "to deal with" in self.screen() and "ctrl-x removes the entry" in self.screen(),
+                      "needs-you dashboard in the preview", 8)
+        self.assertLess(next(i for i, r in enumerate(rows) if "needs you" in r),
+                        next(i for i, r in enumerate(rows) if "Overnight build" in r))
+        self.settle()
+        self.key("Enter")                                  # a summary row is informational: Enter does nothing
+        time.sleep(0.8)
+        self.assertFalse(os.path.exists(self.out))
+        self.assertIn("session>", self.screen())
+
+    def test_other_tab_leads_with_a_stale_row_listing_old_folders(self):
+        old = os.path.join(self.root, "old-folder")
+        os.makedirs(old)
+        year_ago = time.time() - 200 * 86400
+        os.utime(old, (year_ago, year_ago))
+        new = os.path.join(self.root, "new-folder")
+        os.makedirs(new)
+        self.start()
+        self.ready()
+        self.quiet()
+        self.key("M-2")
+        self.wait_for(lambda: "[Other" in self.screen() and "stale  1" in self.screen(), "stale summary row", 8)
+        self.wait_for(lambda: "old-folder" in self.screen().split("│", 1)[1] and "hidden = " in self.screen(),
+                      "stale dashboard in the preview", 8)
+        self.assertNotIn("new-folder", "\n".join(l.split("│", 1)[1] for l in self.screen().splitlines() if "│" in l))
+        self.settle()
+        self.key("Enter")
+        time.sleep(0.8)
+        self.assertFalse(os.path.exists(self.out))
 
     def test_prompt_stays_in_sessions_mode_after_a_background_refresh(self):
         self.gh_repos_file("remote-only")
@@ -671,7 +706,7 @@ class E2E(unittest.TestCase):
         self.ready()
         self.quiet()
         self.key("M-3")
-        self.wait_for(lambda: "[Sessions" in self.screen() and "(no sessions)" in self.screen(), "empty sessions", 8)
+        self.wait_for(lambda: "[Sessions" in self.screen() and "nothing needs you" in self.screen(), "empty sessions", 8)
         self.settle()
         self.key("M-1")
         self.wait_for(lambda: "[Projects" in self.screen() and "alpha" in self.screen(), "keys still work", 8)

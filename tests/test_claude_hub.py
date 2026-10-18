@@ -1150,7 +1150,7 @@ class WorktreesBadgesBulk(Tmp):
         lines = hub.fzf_lines(es, cfg, {})
         names = [l.split("\t")[1].strip() for l in lines[1:]]
         self.assertEqual(names, ["↳ proj-feature"])     # proj has someone else's remote, so it is on the Other tab
-        self.assertEqual([l.split("\t")[1].strip() for l in hub.fzf_lines(es, cfg, {}, tab="other")], ["◇ proj"])
+        self.assertEqual([l.split("\t")[1].strip() for l in hub.fzf_lines(es, cfg, {}, tab="other")][1:], ["◇ proj"])
         cfg = dict(cfg, owners=["o"])
         lines = hub.fzf_lines(es, cfg, {})
         names = [l.split("\t")[1].strip() for l in lines[1:]]
@@ -1294,7 +1294,7 @@ class SourceTabs(Tmp):
 
     def test_tab_filtering_in_the_list(self):
         es = [self.e("a", "synced"), self.e("b", "github"), self.e("c", "local"), self.e("d", "folder")]
-        names = lambda tab: [l.split("\t")[6] for l in hub.fzf_lines(es, self.cfg, {}, "", tab) if l.split("\t")[0] != "~"]
+        names = lambda tab: [l.split("\t")[6] for l in hub.fzf_lines(es, self.cfg, {}, "", tab) if not l.startswith("~")]
         self.assertEqual(names("projects"), ["a", "b", "c"])
         self.assertEqual(names("other"), ["d"])
 
@@ -1371,6 +1371,77 @@ class SourceTabs(Tmp):
         cfg, warn = hub.load_config(p)
         self.assertEqual(cfg["start_tab"], "projects")
         self.assertIn("start_tab", warn)
+
+
+class TabDashboards(Tmp):
+    """The summary rows that lead the Other and Sessions tabs."""
+
+    def sess(self, state, name="s", updated=None, cwd="/w"):
+        return {"sid": name + "-id", "job": "j", "name": name, "cwd": cwd, "kind": "bg", "state": state,
+                "status": "", "pid": 1, "tty": "", "updated": updated if updated is not None else time.time(), "file": ""}
+
+    def test_needs_you_counts_orphans_stale_and_forgotten_detached(self):
+        now = 10 * 86400
+        ss = [self.sess("orphan", "o"), self.sess("stale", "x"), self.sess("detached", "forgotten", updated=now - 2 * 86400),
+              self.sess("detached", "fresh", updated=now - 3600), self.sess("working", "w"), self.sess("terminal", "t")]
+        got = hub.needs_you(ss, now)
+        self.assertEqual([s["name"] for s, _, _ in got], ["o", "x", "forgotten"])
+
+    def test_sessions_summary_row_and_dashboard(self):
+        none = hub.sessions_summary_row([self.sess("working")])
+        self.assertIn("nothing needs you", none)
+        ss = [self.sess("orphan", "lost"), self.sess("working", "busy")]
+        row = hub.sessions_summary_row(ss).split("\t")
+        self.assertEqual((len(row), row[0]), (7, hub.NEEDS_ID))
+        self.assertIn("needs you  1", row[1])
+        text = hub.sessions_dashboard_text(60, ss)
+        self.assertIn("1 to deal with", text)
+        self.assertIn("lost", text)
+        self.assertIn("ctrl-x stops it", text)
+        self.assertNotIn("busy", text.split("sessions:")[0])        # healthy sessions are not listed as problems
+        self.assertIn("Nothing to clean up", hub.sessions_dashboard_text(60, [self.sess("working")]))
+
+    def test_sessions_tab_always_leads_with_the_summary_row(self):
+        self.assertEqual(hub.sessions_tab_lines([])[0].split("\t")[0], hub.NEEDS_ID)
+        self.assertEqual(len(hub.sessions_tab_lines([self.sess("working")])), 2)
+
+    def other(self, name, days, dirty=0, kind="folder"):
+        now = 1_000_000_000
+        l = {"name": name, "path": f"/x/{name}", "root": "/x", "is_git": kind != "folder", "ts": now - days * 86400,
+             "branch": "main", "dirty": dirty, "ahead": 0, "behind": 0, "has_upstream": False, "remote": "",
+             "slug": "them/" + name if kind != "folder" else "", "worktree_of": ""}
+        return {"name": name, "slug": l["slug"], "path": l["path"], "local": l, "gh": None, "ts": l["ts"], "origin": "dir:x"}
+
+    def test_stale_entries_are_old_other_items_oldest_first(self):
+        cfg = dict(hub.DEFAULT_CONFIG, owners=["me"])
+        now = 1_000_000_000
+        es = [self.other("fresh", 5), self.other("old", 100), self.other("oldest", 400),
+              self.other("theirs-old", 200, kind="git")]
+        got = [e["name"] for e in hub.stale_entries(es, cfg, now)]
+        self.assertEqual(got, ["oldest", "theirs-old", "old"])
+
+    def test_other_dashboard_flags_unsaved_work_and_offers_a_hidden_line(self):
+        cfg = dict(hub.DEFAULT_CONFIG, owners=["me"])
+        now = 1_000_000_000
+        es = [self.other("a", 120, dirty=3), self.other("b", 130), self.other("c", 1)]
+        text = hub.other_dashboard_text(80, es, cfg, now)
+        self.assertIn("2 untouched for 90 days", text)
+        self.assertIn("●3", text)
+        self.assertIn('hidden = ["b", "a"]', text)
+        self.assertNotIn("hidden", hub.other_dashboard_text(80, [self.other("c", 1)], cfg, now))
+
+    def test_other_tab_leads_with_the_stale_row_only_when_it_has_entries(self):
+        cfg = dict(hub.DEFAULT_CONFIG, owners=["me"])
+        lines = hub.fzf_lines([self.other("a", 1)], cfg, {}, "", "other")
+        self.assertEqual(lines[0].split("\t")[0], hub.STALE_ID)
+        self.assertEqual(hub.fzf_lines([], cfg, {}, "", "other"), [])
+        self.assertTrue(all(not l.startswith(hub.STALE_ID) for l in hub.fzf_lines([self.other("a", 1)], cfg, {}, "", "projects")))
+
+    def test_preview_routes_the_summary_rows(self):
+        with mock.patch.object(hub, "sessions_dashboard_text", return_value="S"), \
+                mock.patch.object(hub, "other_dashboard_text", return_value="O"):
+            self.assertEqual(hub.preview_text("", "", hub.NEEDS_ID), "S")
+            self.assertEqual(hub.preview_text("", "", hub.STALE_ID), "O")
 
 
 class SessionLegend(Tmp):

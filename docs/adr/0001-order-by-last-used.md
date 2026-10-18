@@ -12,3 +12,9 @@ their parent). Dirty, unpushed and PR state stays visible as row markers.
 All, Local and GitHub were three filters on one merged list, so they are one Projects tab (local, GitHub and both,
 plus worktrees). Other (plain folders, other people's clones) and Sessions stay. Old `start_tab` values `all`, `local`
 and `github` are read as `projects`. Keys: ctrl-s / alt-s cycle, alt-1..3 jump.
+
+## Tab dashboards
+
+Sessions leads with a "needs you" row (orphaned, stale, and detached sessions idle a day or more), Other with a "stale"
+row (folders untouched 90 days, unsaved work flagged, a `hidden = [...]` line to paste). Both are informational: Enter
+does nothing on them. Chosen because each leads to an action; activity charts and size breakdowns were left out.

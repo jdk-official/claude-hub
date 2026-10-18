@@ -7,7 +7,10 @@ Terminal launcher (command: `claude-hub`, repo: `jdk-official/claude-hub`): list
 - Requirements brainstorm: `docs/requirements-brainstorm.md`
 - Workspace vault: [docs/INDEX.md](docs/INDEX.md) (handover, router, ADRs, tracking)
 - Tabs: `ctrl-s` cycles Projects, Other and Sessions (`alt-s` back, `alt-1`..`alt-3` jump). Projects is everything that is
-  yours, local or on GitHub, newest use first (latest commit, push or Claude session). Other is plain folders and other people's clones. A leading glyph
+  yours, local or on GitHub, newest use first (latest commit, push or Claude session). Other is plain folders and other people's clones.
+  Each tab leads with a summary row whose preview is its dashboard: Sessions shows what needs you (orphaned, stale or
+  forgotten detached sessions, with the key to clear each); Other shows folders untouched for 90 days, flags unsaved
+  work, and gives a ready-to-paste `hidden = [...]` line. Enter on a summary row does nothing. A leading glyph
   says where each row lives: `◆` local and GitHub, `⌂` local only, `◌` GitHub only, `◇` someone else's clone,
   `▫` plain folder, `↳` worktree. `claude-hub sessions` prints the session list as text. Session glyphs: `▶` working, `◉` attached, `○` detached,
   `▣` in a terminal, `◈` headless, `⚠` orphaned, `✗` stale, `·` past (shown as a key on the Sessions tab).
